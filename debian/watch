@@ -1,0 +1,3 @@
+version=4
+https://gitlab.gnome.org/jadahl/@PACKAGE@/tags \
+	.*/@PACKAGE@@ANY_VERSION@\.tar\.xz
