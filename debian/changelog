@@ -1,5 +1,5 @@
 gnome-remote-desktop (0.1.6-1) UNRELEASED; urgency=medium
 
-  * Initial release. Closes: #
+  * Initial release. Closes: #909670
 
  -- Jeremy Bicha <jbicha@debian.org>  Fri, 21 Sep 2018 20:31:10 -0400
