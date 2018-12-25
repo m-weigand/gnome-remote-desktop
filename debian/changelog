@@ -1,3 +1,11 @@
+gnome-remote-desktop (0.1.6-2) unstable; urgency=medium
+
+  * Add -Wl,-O1 -Wl,-z,defs -Wl,--as-needed to our LDFLAGS
+  * Enable all hardening flags
+  * Bump Standards-Version to 4.3.0
+
+ -- Jeremy Bicha <jbicha@debian.org>  Tue, 25 Dec 2018 08:50:19 -0500
+
 gnome-remote-desktop (0.1.6-1) unstable; urgency=medium
 
   * Initial release. Closes: #909670
