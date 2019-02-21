@@ -1,8 +1,7 @@
 project('gnome-remote-desktop', 'c',
-        version: '0.1.6',
+        version: '0.1.7',
         meson_version: '>= 0.36.0',
         default_options: ['warning_level=1',
-                          'c_std=gnu99',
                           'buildtype=debugoptimized'])
 
 gnome = import('gnome')
@@ -10,7 +9,7 @@ gnome = import('gnome')
 glib_dep = dependency('glib-2.0')
 gio_dep = dependency('gio-2.0')
 gio_unix_dep = dependency('gio-unix-2.0')
-pipewire_dep = dependency('libpipewire-0.1')
+pipewire_dep = dependency('libpipewire-0.2', version: '>= 0.2.5')
 systemd_dep = dependency('systemd')
 libvncserver_dep = dependency('libvncserver')
 libsecret_dep = dependency('libsecret-1')
