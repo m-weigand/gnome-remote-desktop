@@ -6,8 +6,8 @@ Source: gnome-remote-desktop
 Section: gnome
 Priority: optional
 Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
-Uploaders: Jeremy Bicha <jbicha@debian.org>
-Build-Depends: debhelper (>= 11),
+Uploaders: Jeremy Bicha <jbicha@debian.org>, Laurent Bigonville <bigon@debian.org>
+Build-Depends: debhelper-compat (= 12),
                gnome-pkg-tools,
                libglib2.0-dev,
                libnotify-dev,
