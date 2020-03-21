@@ -1,6 +1,6 @@
 project('gnome-remote-desktop', 'c',
-        version: '0.1.7',
-        meson_version: '>= 0.36.0',
+        version: '0.1.8',
+        meson_version: '>= 0.47.0',
         default_options: ['warning_level=1',
                           'buildtype=debugoptimized'])
 
@@ -9,9 +9,10 @@ gnome = import('gnome')
 glib_dep = dependency('glib-2.0')
 gio_dep = dependency('gio-2.0')
 gio_unix_dep = dependency('gio-unix-2.0')
-pipewire_dep = dependency('libpipewire-0.2', version: '>= 0.2.5')
+pipewire_dep = dependency('libpipewire-0.3', version: '>= 0.3.0')
 systemd_dep = dependency('systemd')
 libvncserver_dep = dependency('libvncserver')
+libvncclient_dep = dependency('libvncclient')
 libsecret_dep = dependency('libsecret-1')
 libnotify_dep = dependency('libnotify')
 
@@ -34,6 +35,10 @@ if servicedir == ''
   error('Couldn\'t determine systemd user unit service directory')
 endif
 
+top_srcdir = meson.current_source_dir()
+builddir = meson.current_build_dir()
+
 subdir('src')
+subdir('tests')
 
 meson.add_install_script('meson_post_install.py')

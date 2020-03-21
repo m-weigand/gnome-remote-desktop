@@ -82,16 +82,19 @@ void
 grd_session_stop (GrdSession *session)
 {
   GrdSessionPrivate *priv = grd_session_get_instance_private (session);
-  GError *error = NULL;
 
   GRD_SESSION_GET_CLASS (session)->stop (session);
 
   if (priv->remote_desktop_session && priv->started)
     {
       GrdDBusRemoteDesktopSession *proxy = priv->remote_desktop_session;
+      GError *error = NULL;
 
       if (!grd_dbus_remote_desktop_session_call_stop_sync (proxy, NULL, &error))
-        g_warning ("Failed to stop: %s\n", error->message);
+        {
+          g_warning ("Failed to stop: %s\n", error->message);
+          g_error_free (error);
+        }
     }
 
   g_clear_object (&priv->remote_desktop_session);
@@ -404,6 +407,9 @@ on_remote_desktop_session_proxy_acquired (GObject      *object,
   g_variant_builder_add (&properties_builder, "{sv}",
                          "remote-desktop-session-id",
                          g_variant_new_string (remote_desktop_session_id));
+  g_variant_builder_add (&properties_builder, "{sv}",
+                         "disable-animations",
+                         g_variant_new_boolean (TRUE));
   properties_variant = g_variant_builder_end (&properties_builder);
 
   screen_cast_proxy = grd_context_get_screen_cast_proxy (priv->context);

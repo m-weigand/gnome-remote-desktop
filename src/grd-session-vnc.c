@@ -151,20 +151,17 @@ grd_session_vnc_queue_resize_framebuffer (GrdSessionVnc *session_vnc,
 }
 
 void
-grd_session_vnc_draw_buffer (GrdSessionVnc *session_vnc,
+grd_session_vnc_take_buffer (GrdSessionVnc *session_vnc,
                              void          *data)
 {
-  size_t size;
-
   if (session_vnc->pending_framebuffer_resize)
-    return;
+    {
+      free (data);
+      return;
+    }
 
-  size = (session_vnc->rfb_screen->height *
-          grd_session_vnc_get_framebuffer_stride (session_vnc));
-
-  memcpy (session_vnc->rfb_screen->frameBuffer,
-          data,
-          size);
+  free (session_vnc->rfb_screen->frameBuffer);
+  session_vnc->rfb_screen->frameBuffer = data;
 
   rfbMarkRectAsModified (session_vnc->rfb_screen, 0, 0,
                          session_vnc->rfb_screen->width,
@@ -522,7 +519,7 @@ init_vnc_session (GrdSessionVnc *session_vnc)
   int screen_height;
   rfbScreenInfoPtr rfb_screen;
 
-  /* Arbitrary framebuffer size, will get the porper size from the stream. */
+  /* Arbitrary framebuffer size, will get the proper size from the stream. */
   screen_width = 800;
   screen_height = 600;
   rfb_screen = rfbGetScreen (0, NULL,
@@ -534,7 +531,8 @@ init_vnc_session (GrdSessionVnc *session_vnc)
 
   socket = g_socket_connection_get_socket (session_vnc->connection);
   rfb_screen->inetdSock = g_socket_get_fd (socket);
-  rfb_screen->desktopName = "GNOME Remote Desktop (VNC)";
+  rfb_screen->desktopName = "GNOME";
+  rfb_screen->versionString = "GNOME Remote Desktop (VNC)";
   rfb_screen->neverShared = TRUE;
   rfb_screen->newClientHook = handle_new_client;
   rfb_screen->screenData = session_vnc;
