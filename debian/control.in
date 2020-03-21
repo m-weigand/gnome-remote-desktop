@@ -7,10 +7,10 @@ Build-Depends: debhelper-compat (= 12),
                gnome-pkg-tools,
                libglib2.0-dev,
                libnotify-dev,
-               libpipewire-0.2-dev,
+               libpipewire-0.3-dev,
                libsecret-1-dev,
                libvncserver-dev,
-               meson (>= 0.36.0),
+               meson (>= 0.47.0),
 Standards-Version: 4.5.0
 Vcs-Browser: https://salsa.debian.org/gnome-team/gnome-remote-desktop
 Vcs-Git: https://salsa.debian.org/gnome-team/gnome-remote-desktop.git
@@ -20,7 +20,7 @@ Package: gnome-remote-desktop
 Architecture: linux-any
 Depends: ${misc:Depends},
          ${shlibs:Depends},
-         pipewire
+         pipewire (>= 0.3.0)
 Description: Remote desktop daemon for GNOME using PipeWire
  This daemon enables GNOME to offer remote desktop sharing using VNC
  with PipeWire. It supports both GNOME on X and GNOME on Wayland.
