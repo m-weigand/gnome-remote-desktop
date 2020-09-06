@@ -1,9 +1,16 @@
-gnome-remote-desktop (0.1.8-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (0.1.8-1) experimental; urgency=medium
 
+  * Team upload.
+
+  [ Laurent Bigonville ]
   * New upstream release
     - debian/control.in: Bump the build-dependencies
 
- -- Laurent Bigonville <bigon@debian.org>  Sat, 21 Mar 2020 13:03:32 +0100
+  [ Andreas Henriksson ]
+  * Use user-unit dir from systemd pkg-config file
+  * Make tests non-fatal for now
+
+ -- Andreas Henriksson <andreas@fatal.se>  Sun, 06 Sep 2020 23:43:23 +0200
 
 gnome-remote-desktop (0.1.7-2) unstable; urgency=medium
 
