@@ -1,5 +1,6 @@
-gnome-remote-desktop (0.1.9-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (0.1.9-1) experimental; urgency=medium
 
+  * Team upload
   * New upstream release
   * d/upstream/metadata: Add.
     The canonical upstream git repo has moved to
@@ -7,8 +8,11 @@ gnome-remote-desktop (0.1.9-1) UNRELEASED; urgency=medium
   * d/watch, d/copyright: Switch source of releases.
     Newer versions of this package are now available from
     <https://download.gnome.org/sources/gnome-remote-desktop/>.
+  * d/copyright: Update
+  * d/control.in: Update dependencies for new RDP support
+  * d/control.in: Depend on a compatible version of GNOME Shell
 
- -- Simon McVittie <smcv@debian.org>  Wed, 09 Sep 2020 09:49:03 +0100
+ -- Simon McVittie <smcv@debian.org>  Wed, 09 Sep 2020 12:38:19 +0100
 
 gnome-remote-desktop (0.1.8-1) experimental; urgency=medium
 
