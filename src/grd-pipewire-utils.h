@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Red Hat Inc.
+ * Copyright (C) 2020 Pascal Nowack
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -15,28 +15,33 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
  * 02111-1307, USA.
- *
- * Written by:
- *     Jonas Ådahl <jadahl@gmail.com>
  */
 
-#ifndef GRD_TYPES_H
-#define GRD_TYPES_H
+#ifndef GRD_PIPEWIRE_UTILS_H
+#define GRD_PIPEWIRE_UTILS_H
 
-typedef struct _GrdContext GrdContext;
-typedef struct _GrdRdpSAMFile GrdRdpSAMFile;
-typedef struct _GrdRdpServer GrdRdpServer;
-typedef struct _GrdSession GrdSession;
-typedef struct _GrdSessionRdp GrdSessionRdp;
-typedef struct _GrdSessionVnc GrdSessionVnc;
-typedef struct _GrdStream GrdStream;
-typedef struct _GrdPipeWireStream GrdPipeWireStream;
-typedef struct _GrdPipeWireStreamMonitor GrdPipeWireStreamMonitor;
-typedef struct _GrdVncServer GrdVncServer;
+#include <gio/gio.h>
+#include <stdint.h>
 
-typedef enum _GrdPixelFormat
+#include "grd-types.h"
+
+#define CURSOR_META_SIZE(width, height) \
+ (sizeof(struct spa_meta_cursor) + \
+  sizeof(struct spa_meta_bitmap) + width * height * 4)
+
+typedef struct _GrdPipeWireSource
 {
-  GRD_PIXEL_FORMAT_RGBA8888,
-} GrdPixelFormat;
+  GSource base;
 
-#endif /* GRD_TYPES_H */
+  struct pw_loop *pipewire_loop;
+} GrdPipeWireSource;
+
+void grd_maybe_initialize_pipewire (void);
+
+gboolean grd_spa_pixel_format_to_grd_pixel_format (uint32_t        spa_format,
+                                                   GrdPixelFormat *out_format);
+
+void grd_sync_dma_buf (int      fd,
+                       uint64_t start_or_end);
+
+#endif /* GRD_PIPEWIRE_UTILS_H */

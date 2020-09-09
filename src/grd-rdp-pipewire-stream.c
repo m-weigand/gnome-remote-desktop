@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 Red Hat Inc.
+ * Copyright (C) 2020 Pascal Nowack
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -15,12 +15,11 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
  * 02111-1307, USA.
- *
  */
 
 #include "config.h"
 
-#include "grd-vnc-pipewire-stream.h"
+#include "grd-rdp-pipewire-stream.h"
 
 #include <linux/dma-buf.h>
 #include <pipewire/pipewire.h>
@@ -32,7 +31,6 @@
 #include <sys/syscall.h>
 
 #include "grd-pipewire-utils.h"
-#include "grd-vnc-cursor.h"
 
 enum
 {
@@ -43,20 +41,24 @@ enum
 
 static guint signals[N_SIGNALS];
 
-typedef struct _GrdVncFrame
+typedef struct _GrdRdpFrame
 {
   void *data;
-  rfbCursorPtr rfb_cursor;
-  gboolean cursor_moved;
-  int cursor_x;
-  int cursor_y;
-} GrdVncFrame;
+  uint8_t *pointer_bitmap;
+  uint16_t pointer_hotspot_x;
+  uint16_t pointer_hotspot_y;
+  uint16_t pointer_width;
+  uint16_t pointer_height;
+  bool pointer_moved;
+  uint16_t pointer_x;
+  uint16_t pointer_y;
+} GrdRdpFrame;
 
-struct _GrdVncPipeWireStream
+struct _GrdRdpPipeWireStream
 {
   GObject parent;
 
-  GrdSessionVnc *session;
+  GrdSessionRdp *session_rdp;
 
   GSource *pipewire_source;
   struct pw_context *pipewire_context;
@@ -65,7 +67,7 @@ struct _GrdVncPipeWireStream
   struct spa_hook pipewire_core_listener;
 
   GMutex frame_mutex;
-  GrdVncFrame *pending_frame;
+  GrdRdpFrame *pending_frame;
 
   struct pw_stream *pipewire_stream;
   struct spa_hook pipewire_stream_listener;
@@ -75,7 +77,7 @@ struct _GrdVncPipeWireStream
   struct spa_video_info_raw spa_format;
 };
 
-G_DEFINE_TYPE (GrdVncPipeWireStream, grd_vnc_pipewire_stream,
+G_DEFINE_TYPE (GrdRdpPipeWireStream, grd_rdp_pipewire_stream,
                G_TYPE_OBJECT)
 
 static gboolean
@@ -149,7 +151,7 @@ on_stream_state_changed (void                 *user_data,
                          enum pw_stream_state  state,
                          const char           *error)
 {
-  g_debug ("Pipewire stream state changed from %s to %s",
+  g_debug ("PipeWire stream state changed from %s to %s",
            pw_stream_state_as_string (old),
            pw_stream_state_as_string (state));
 
@@ -171,7 +173,7 @@ on_stream_param_changed (void                 *user_data,
                          uint32_t              id,
                          const struct spa_pod *format)
 {
-  GrdVncPipeWireStream *stream = GRD_VNC_PIPEWIRE_STREAM (user_data);
+  GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
   uint8_t params_buffer[1024];
   struct spa_pod_builder pod_builder;
   int width;
@@ -188,7 +190,7 @@ on_stream_param_changed (void                 *user_data,
   width = stream->spa_format.size.width;
   height = stream->spa_format.size.height;
 
-  grd_session_vnc_queue_resize_framebuffer (stream->session, width, height);
+  grd_session_rdp_resize_framebuffer (stream->session_rdp, width, height);
 
   params[0] = spa_pod_builder_add_object (
     &pod_builder,
@@ -203,12 +205,12 @@ on_stream_param_changed (void                 *user_data,
     SPA_PARAM_META_size, SPA_POD_Int (sizeof (struct spa_meta_header)),
     0);
 
-  params[2] = spa_pod_builder_add_object(
+  params[2] = spa_pod_builder_add_object (
     &pod_builder,
     SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
     SPA_PARAM_META_type, SPA_POD_Id (SPA_META_Cursor),
     SPA_PARAM_META_size, SPA_POD_CHOICE_RANGE_Int (CURSOR_META_SIZE (384, 384),
-                                                   CURSOR_META_SIZE (1,1),
+                                                   CURSOR_META_SIZE (1, 1),
                                                    CURSOR_META_SIZE (384, 384)),
     0);
 
@@ -224,8 +226,8 @@ do_render (struct spa_loop *loop,
            size_t           size,
            void            *user_data)
 {
-  GrdVncPipeWireStream *stream = GRD_VNC_PIPEWIRE_STREAM (user_data);
-  GrdVncFrame *frame;
+  GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
+  GrdRdpFrame *frame;
 
   g_mutex_lock (&stream->frame_mutex);
   frame = g_steal_pointer (&stream->pending_frame);
@@ -234,37 +236,38 @@ do_render (struct spa_loop *loop,
   if (!frame)
     return 0;
 
-  if (frame->rfb_cursor)
-    grd_session_vnc_set_cursor (stream->session, frame->rfb_cursor);
-
-  if (frame->cursor_moved)
-    {
-      grd_session_vnc_move_cursor (stream->session,
-                                   frame->cursor_x,
-                                   frame->cursor_y);
-    }
-
   if (frame->data)
-    grd_session_vnc_take_buffer (stream->session, frame->data);
-  else
-    grd_session_vnc_flush (stream->session);
+    grd_session_rdp_take_buffer (stream->session_rdp, frame->data);
+
+  if (frame->pointer_bitmap)
+    grd_session_rdp_update_pointer (stream->session_rdp,
+                                    frame->pointer_hotspot_x,
+                                    frame->pointer_hotspot_y,
+                                    frame->pointer_width,
+                                    frame->pointer_height,
+                                    frame->pointer_bitmap);
+
+  if (frame->pointer_moved)
+    grd_session_rdp_move_pointer (stream->session_rdp,
+                                  frame->pointer_x,
+                                  frame->pointer_y);
 
   g_free (frame);
 
   return 0;
 }
 
-static GrdVncFrame *
-process_buffer (GrdVncPipeWireStream *stream,
+static GrdRdpFrame *
+process_buffer (GrdRdpPipeWireStream *stream,
                 struct spa_buffer    *buffer)
 {
   size_t size;
   uint8_t *map;
   void *src_data;
   struct spa_meta_cursor *spa_meta_cursor;
-  g_autofree GrdVncFrame *frame = NULL;
+  g_autofree GrdRdpFrame *frame = NULL;
 
-  frame = g_new0 (GrdVncFrame, 1);
+  frame = g_new0 (GrdRdpFrame, 1);
 
   if (buffer->datas[0].chunk->size == 0)
     {
@@ -314,17 +317,17 @@ process_buffer (GrdVncPipeWireStream *stream,
     {
       int src_stride;
       int dst_stride;
-      int width;
       int height;
+      int width;
       int y;
 
       src_stride = buffer->datas[0].chunk->stride;
-      dst_stride = grd_session_vnc_get_framebuffer_stride (stream->session);
+      dst_stride = grd_session_rdp_get_framebuffer_stride (stream->session_rdp);
       height = stream->spa_format.size.height;
       width = stream->spa_format.size.width;
 
       frame->data = g_malloc (height * dst_stride);
-      for (y = 0; y < height; y++)
+      for (y = 0; y < height; ++y)
         {
           memcpy (((uint8_t *) frame->data) + y * dst_stride,
                   ((uint8_t *) src_data) + y * src_stride,
@@ -343,7 +346,7 @@ process_buffer (GrdVncPipeWireStream *stream,
                                                sizeof *spa_meta_cursor);
   if (spa_meta_cursor && spa_meta_cursor_is_valid (spa_meta_cursor))
     {
-      struct spa_meta_bitmap *spa_meta_bitmap;
+      struct spa_meta_bitmap *spa_meta_bitmap = NULL;
       GrdPixelFormat format;
 
       if (spa_meta_cursor->bitmap_offset)
@@ -351,10 +354,6 @@ process_buffer (GrdVncPipeWireStream *stream,
           spa_meta_bitmap = SPA_MEMBER (spa_meta_cursor,
                                         spa_meta_cursor->bitmap_offset,
                                         struct spa_meta_bitmap);
-        }
-      else
-        {
-          spa_meta_bitmap = NULL;
         }
 
       if (spa_meta_bitmap &&
@@ -364,27 +363,19 @@ process_buffer (GrdVncPipeWireStream *stream,
                                                     &format))
         {
           uint8_t *buf;
-          rfbCursorPtr rfb_cursor;
 
           buf = SPA_MEMBER (spa_meta_bitmap, spa_meta_bitmap->offset, uint8_t);
-          rfb_cursor = grd_vnc_create_cursor (spa_meta_bitmap->size.width,
-                                              spa_meta_bitmap->size.height,
-                                              spa_meta_bitmap->stride,
-                                              format,
-                                              buf);
-          rfb_cursor->xhot = spa_meta_cursor->hotspot.x;
-          rfb_cursor->yhot = spa_meta_cursor->hotspot.y;
-
-          frame->rfb_cursor = rfb_cursor;
-        }
-      else if (spa_meta_bitmap)
-        {
-          frame->rfb_cursor = grd_vnc_create_empty_cursor (1, 1);
+          frame->pointer_bitmap = g_memdup (buf, spa_meta_bitmap->size.height *
+                                                 spa_meta_bitmap->stride);
+          frame->pointer_hotspot_x = spa_meta_cursor->hotspot.x;
+          frame->pointer_hotspot_y = spa_meta_cursor->hotspot.y;
+          frame->pointer_width = spa_meta_bitmap->size.width;
+          frame->pointer_height = spa_meta_bitmap->size.height;
         }
 
-      frame->cursor_moved = TRUE;
-      frame->cursor_x = spa_meta_cursor->position.x;
-      frame->cursor_y = spa_meta_cursor->position.y;
+      frame->pointer_moved = true;
+      frame->pointer_x = spa_meta_cursor->position.x;
+      frame->pointer_y = spa_meta_cursor->position.y;
     }
 
   return g_steal_pointer (&frame);
@@ -393,12 +384,12 @@ process_buffer (GrdVncPipeWireStream *stream,
 static void
 on_stream_process (void *user_data)
 {
-  GrdVncPipeWireStream *stream = GRD_VNC_PIPEWIRE_STREAM (user_data);
+  GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
   GrdPipeWireSource *pipewire_source =
     (GrdPipeWireSource *) stream->pipewire_source;
   struct pw_buffer *next_buffer;
   struct pw_buffer *buffer = NULL;
-  GrdVncFrame *frame;
+  GrdRdpFrame *frame;
 
   next_buffer = pw_stream_dequeue_buffer (stream->pipewire_stream);
   while (next_buffer)
@@ -419,6 +410,7 @@ on_stream_process (void *user_data)
   if (stream->pending_frame)
     {
       g_free (stream->pending_frame->data);
+      g_free (stream->pending_frame->pointer_bitmap);
       g_clear_pointer (&stream->pending_frame, g_free);
     }
   stream->pending_frame = frame;
@@ -439,7 +431,7 @@ static const struct pw_stream_events stream_events = {
 };
 
 static gboolean
-connect_to_stream (GrdVncPipeWireStream  *stream,
+connect_to_stream (GrdRdpPipeWireStream  *stream,
                    GError               **error)
 {
   struct pw_stream *pipewire_stream;
@@ -453,7 +445,7 @@ connect_to_stream (GrdVncPipeWireStream  *stream,
   int ret;
 
   pipewire_stream = pw_stream_new (stream->pipewire_core,
-                                   "grd-vnc-pipewire-stream",
+                                   "grd-rdp-pipewire-stream",
                                    NULL);
 
   min_rect = SPA_RECTANGLE (1, 1);
@@ -471,7 +463,7 @@ connect_to_stream (GrdVncPipeWireStream  *stream,
     SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle (&min_rect,
                                                            &min_rect,
                                                            &max_rect),
-    SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction (&SPA_FRACTION(0, 1)),
+    SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction (&SPA_FRACTION (0, 1)),
     SPA_FORMAT_VIDEO_maxFramerate, SPA_POD_CHOICE_RANGE_Fraction (&min_framerate,
                                                                   &min_framerate,
                                                                   &max_framerate),
@@ -507,9 +499,9 @@ on_core_error (void       *user_data,
                int         res,
                const char *message)
 {
-  GrdVncPipeWireStream *stream = GRD_VNC_PIPEWIRE_STREAM (user_data);
+  GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
 
-  g_warning ("Pipewire core error: id:%u %s", id, message);
+  g_warning ("PipeWire core error: id:%u %s", id, message);
 
   if (id == PW_ID_CORE && res == -EPIPE)
     g_signal_emit (stream, signals[CLOSED], 0);
@@ -520,18 +512,18 @@ static const struct pw_core_events core_events = {
   .error = on_core_error,
 };
 
-GrdVncPipeWireStream *
-grd_vnc_pipewire_stream_new (GrdSessionVnc  *session_vnc,
+GrdRdpPipeWireStream *
+grd_rdp_pipewire_stream_new (GrdSessionRdp  *session_rdp,
                              uint32_t        src_node_id,
                              GError        **error)
 {
-  g_autoptr (GrdVncPipeWireStream) stream = NULL;
+  g_autoptr (GrdRdpPipeWireStream) stream = NULL;
   GrdPipeWireSource *pipewire_source;
 
   grd_maybe_initialize_pipewire ();
 
-  stream = g_object_new (GRD_TYPE_VNC_PIPEWIRE_STREAM, NULL);
-  stream->session = session_vnc;
+  stream = g_object_new (GRD_TYPE_RDP_PIPEWIRE_STREAM, NULL);
+  stream->session_rdp = session_rdp;
   stream->src_node_id = src_node_id;
 
   pipewire_source = create_pipewire_source ();
@@ -548,7 +540,7 @@ grd_vnc_pipewire_stream_new (GrdSessionVnc  *session_vnc,
   if (!stream->pipewire_context)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "Failed to create pipewire context");
+                   "Failed to create PipeWire context");
       return NULL;
     }
 
@@ -556,7 +548,7 @@ grd_vnc_pipewire_stream_new (GrdSessionVnc  *session_vnc,
   if (!stream->pipewire_core)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "Failed to connect pipewire context");
+                   "Failed to connect PipeWire context");
       return NULL;
     }
 
@@ -572,9 +564,9 @@ grd_vnc_pipewire_stream_new (GrdSessionVnc  *session_vnc,
 }
 
 static void
-grd_vnc_pipewire_stream_finalize (GObject *object)
+grd_rdp_pipewire_stream_finalize (GObject *object)
 {
-  GrdVncPipeWireStream *stream = GRD_VNC_PIPEWIRE_STREAM (object);
+  GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (object);
 
   /*
    * We can't clear stream->pipewire_stream before destroying it, as the data
@@ -587,21 +579,21 @@ grd_vnc_pipewire_stream_finalize (GObject *object)
   g_clear_pointer (&stream->pipewire_context, pw_context_destroy);
   g_clear_pointer (&stream->pipewire_source, g_source_destroy);
 
-  G_OBJECT_CLASS (grd_vnc_pipewire_stream_parent_class)->finalize (object);
+  G_OBJECT_CLASS (grd_rdp_pipewire_stream_parent_class)->finalize (object);
 }
 
 static void
-grd_vnc_pipewire_stream_init (GrdVncPipeWireStream *stream)
+grd_rdp_pipewire_stream_init (GrdRdpPipeWireStream *stream)
 {
   g_mutex_init (&stream->frame_mutex);
 }
 
 static void
-grd_vnc_pipewire_stream_class_init (GrdVncPipeWireStreamClass *klass)
+grd_rdp_pipewire_stream_class_init (GrdRdpPipeWireStreamClass *klass)
 {
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
 
-  object_class->finalize = grd_vnc_pipewire_stream_finalize;
+  object_class->finalize = grd_rdp_pipewire_stream_finalize;
 
   signals[CLOSED] = g_signal_new ("closed",
                                   G_TYPE_FROM_CLASS (klass),
