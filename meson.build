@@ -1,11 +1,15 @@
 project('gnome-remote-desktop', 'c',
-        version: '0.1.8',
+        version: '0.1.9',
         meson_version: '>= 0.47.0',
         default_options: ['warning_level=1',
                           'buildtype=debugoptimized'])
 
+freerdp_req = '>= 2.2.0'
+
 gnome = import('gnome')
 
+cairo_dep = dependency('cairo')
+freerdp_dep = dependency('freerdp2', version: freerdp_req)
 glib_dep = dependency('glib-2.0')
 gio_dep = dependency('gio-2.0')
 gio_unix_dep = dependency('gio-unix-2.0')
@@ -15,6 +19,7 @@ libvncserver_dep = dependency('libvncserver')
 libvncclient_dep = dependency('libvncclient')
 libsecret_dep = dependency('libsecret-1')
 libnotify_dep = dependency('libnotify')
+winpr_dep = dependency('winpr2', version: freerdp_req)
 
 cdata = configuration_data()
 cdata.set_quoted('GETTEXT_PACKAGE', 'gnome-remote-desktop')
