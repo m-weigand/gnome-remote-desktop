@@ -3,7 +3,9 @@ Upstream-Name: GNOME Remote Desktop
 Source: https://download.gnome.org/sources/gnome-remote-desktop/
 
 Files: *
-Copyright: 2015, 2017-2018 Red Hat Inc.
+Copyright:
+ 2015-2019 Red Hat Inc.
+ 2020 Pascal Nowack
 License: GPL-2+
  This package is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
