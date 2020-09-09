@@ -8,12 +8,15 @@ Priority: optional
 Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
 Uploaders: Jeremy Bicha <jbicha@debian.org>, Laurent Bigonville <bigon@debian.org>
 Build-Depends: debhelper-compat (= 12),
+               freerdp2-dev (>= 2.2),
                gnome-pkg-tools,
+               libcairo2-dev,
                libglib2.0-dev,
                libnotify-dev,
                libpipewire-0.3-dev,
                libsecret-1-dev,
                libvncserver-dev,
+               libwinpr2-dev (>= 2.2),
                meson (>= 0.47.0),
                systemd,
 Standards-Version: 4.5.0
