@@ -1,3 +1,11 @@
+gnome-remote-desktop (0.1.9-2) unstable; urgency=medium
+
+  * Team upload
+  * Relax runtime dependency to be satisfiable in unstable
+  * Upload to unstable for PipeWire 0.3 transition (Closes: #966521)
+
+ -- Simon McVittie <smcv@debian.org>  Thu, 10 Sep 2020 14:04:30 +0100
+
 gnome-remote-desktop (0.1.9-1) experimental; urgency=medium
 
   * Team upload
