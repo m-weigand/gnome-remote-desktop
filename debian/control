@@ -28,7 +28,9 @@ Package: gnome-remote-desktop
 Architecture: linux-any
 Depends: ${misc:Depends},
          ${shlibs:Depends},
-         gnome-shell (>= 3.37.92-2~),
+         gnome-shell (>= 3.36),
+         gnome-shell (>= 3.37.92-2~) | libmutter-6-0 (>= 3.36.6-1~),
+         libmutter-7-0 (>= 3.37.92-1~) | libmutter-6-0 (>= 3.36.6-1~),
          pipewire (>= 0.3.0)
 Description: Remote desktop daemon for GNOME using PipeWire
  This daemon enables GNOME to offer remote desktop sharing using VNC
