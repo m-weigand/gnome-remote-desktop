@@ -1,3 +1,13 @@
+gnome-remote-desktop (0.1.9-3) unstable; urgency=medium
+
+  * Team upload
+  * Add patch from upstream, via Fedora, to fix crashes
+  * Add patch to make test script find bash on non-merged-/usr systems
+  * Standards-Version: 4.5.1 (no changes required)
+  * Simplify dependencies now that GNOME 3.38 is in unstable
+
+ -- Simon McVittie <smcv@debian.org>  Sun, 17 Jan 2021 13:53:19 +0000
+
 gnome-remote-desktop (0.1.9-2) unstable; urgency=medium
 
   * Team upload
