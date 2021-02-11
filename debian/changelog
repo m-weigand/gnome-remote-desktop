@@ -1,8 +1,8 @@
-gnome-remote-desktop (0.1.9-4) UNRELEASED; urgency=medium
+gnome-remote-desktop (0.1.9-4) unstable; urgency=medium
 
   * debian/patches: Fix use-after-free crash on repeated VNC connections
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Thu, 11 Feb 2021 17:13:50 +0100
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Thu, 11 Feb 2021 17:14:14 +0100
 
 gnome-remote-desktop (0.1.9-3) unstable; urgency=medium
 
