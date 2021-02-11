@@ -1,2 +1,3 @@
 vnc-Copy-pixels-using-the-right-destination-stride.patch
 tests-Use-a-more-interoperable-path-to-bash.patch
+vnc-Drop-frames-if-client-is-gone.patch
