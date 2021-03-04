@@ -1,3 +1,10 @@
+gnome-remote-desktop (0.1.9-5) UNRELEASED; urgency=medium
+
+  * debian/control: add budgie-desktop as an alternate for gnome-shell
+    (Closes: #982937)
+
+ -- David Mohammed <fossfreedom@ubuntu.com>  Thu, 04 Mar 2021 17:15:53 +0000
+
 gnome-remote-desktop (0.1.9-4) unstable; urgency=medium
 
   * debian/patches: Fix use-after-free crash on repeated VNC connections
