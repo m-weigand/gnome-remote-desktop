@@ -1,9 +1,12 @@
-gnome-remote-desktop (0.1.9-5) UNRELEASED; urgency=medium
+gnome-remote-desktop (0.1.9-5) unstable; urgency=medium
 
+  * Team upload
+
+  [ David Mohammed ]
   * debian/control: add budgie-desktop as an alternate for gnome-shell
     (Closes: #982937)
 
- -- David Mohammed <fossfreedom@ubuntu.com>  Thu, 04 Mar 2021 17:15:53 +0000
+ -- Simon McVittie <smcv@debian.org>  Tue, 09 Mar 2021 10:31:04 +0000
 
 gnome-remote-desktop (0.1.9-4) unstable; urgency=medium
 
