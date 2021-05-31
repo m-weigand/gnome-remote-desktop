@@ -1,1 +1,2 @@
 tests-Use-a-more-interoperable-path-to-bash.patch
+ubuntu/meson-Add-option-to-disable-rdp-clipboard-support.patch

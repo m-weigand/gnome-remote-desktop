@@ -1,0 +1,156 @@
+From: =?utf-8?b?Ik1hcmNvIFRyZXZpc2FuIChUcmV2acOxbyki?= <mail@3v1n0.net>
+Date: Mon, 31 May 2021 17:26:56 +0200
+Subject: meson: Add option to disable rdp clipboard support
+
+This requires libfuse-3 which is not in Ubuntu main yet, so add an
+option to disable it
+---
+ config.h.meson        |  3 +++
+ meson.build           |  4 +++-
+ meson_options.txt     |  5 +++++
+ src/grd-session-rdp.c |  8 ++++++++
+ src/meson.build       | 13 +++++++++----
+ 5 files changed, 28 insertions(+), 5 deletions(-)
+
+diff --git a/config.h.meson b/config.h.meson
+index e7fa370..45a6da2 100644
+--- a/config.h.meson
++++ b/config.h.meson
+@@ -9,6 +9,9 @@
+ /* Defined if RDP backend enabled */
+ #mesondefine HAVE_RDP
+ 
++/* Defined if RDP clipboard enabled */
++#mesondefine HAVE_RDP_CLIPBOARD
++
+ /* Defined if VNC backend is enabled */
+ #mesondefine HAVE_VNC
+ 
+diff --git a/meson.build b/meson.build
+index 7b29bfe..37d0898 100644
+--- a/meson.build
++++ b/meson.build
+@@ -38,7 +38,7 @@ if have_rdp
+ 
+   freerdp_client_dep = dependency('freerdp-client2', version: freerdp_req)
+   freerdp_server_dep = dependency('freerdp-server2', version: freerdp_req)
+-  fuse_dep = dependency('fuse3', version: fuse_req)
++  fuse_dep = dependency('fuse3', version: fuse_req, required: get_option('rdp_clipboard'))
+   winpr_dep = dependency('winpr2', version: freerdp_req)
+   xkbcommon_dep = dependency('xkbcommon', version: xkbcommon_req)
+ endif
+@@ -53,6 +53,7 @@ cdata.set_quoted('GETTEXT_PACKAGE', 'gnome-remote-desktop')
+ cdata.set_quoted('VERSION', meson.project_version())
+ 
+ cdata.set('HAVE_RDP', have_rdp)
++cdata.set('HAVE_RDP_CLIPBOARD', have_rdp and get_option('rdp_clipboard'))
+ cdata.set('HAVE_VNC', have_vnc)
+ cdata.set('HAVE_FREERDP_2_3', have_freerdp_2_3)
+ 
+@@ -99,6 +100,7 @@ output = [
+   '    Backends:',
+   '',
+   '        RDP...................... ' + have_rdp.to_string(),
++  '        RDP clipboard............ ' + (have_rdp and get_option('rdp_clipboard')).to_string(),
+   '        VNC...................... ' + have_vnc.to_string(),
+   '',
+   '  Now type \'ninja -C ' + meson.build_root() + '\' to build ' + meson.project_name(),
+diff --git a/meson_options.txt b/meson_options.txt
+index ca2908b..e97a72c 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -3,6 +3,11 @@ option('rdp',
+        value: true,
+        description: 'Enable the RDP backend')
+ 
++option('rdp_clipboard',
++       type: 'boolean',
++       value: true,
++       description: 'Enable the RDP clipboard support')
++
+ option('vnc',
+        type: 'boolean',
+        value: true,
+diff --git a/src/grd-session-rdp.c b/src/grd-session-rdp.c
+index 5b59eb9..fc6233c 100644
+--- a/src/grd-session-rdp.c
++++ b/src/grd-session-rdp.c
+@@ -28,7 +28,9 @@
+ #include <linux/input-event-codes.h>
+ #include <xkbcommon/xkbcommon.h>
+ 
++#ifdef HAVE_HAVE_RDP_CLIPBOARD
+ #include "grd-clipboard-rdp.h"
++#endif
+ #include "grd-context.h"
+ #include "grd-damage-utils.h"
+ #include "grd-rdp-event-queue.h"
+@@ -154,7 +156,9 @@ typedef struct _RdpPeerContext
+   /* Virtual Channel Manager */
+   HANDLE vcm;
+ 
++#ifdef HAVE_HAVE_RDP_CLIPBOARD
+   GrdClipboardRdp *clipboard_rdp;
++#endif
+ } RdpPeerContext;
+ 
+ G_DEFINE_TYPE (GrdSessionRdp, grd_session_rdp, GRD_TYPE_SESSION);
+@@ -1764,7 +1768,9 @@ grd_session_rdp_stop (GrdSession *session)
+ 
+   g_clear_object (&session_rdp->pipewire_stream);
+ 
++#ifdef HAVE_HAVE_RDP_CLIPBOARD
+   g_clear_object (&rdp_peer_context->clipboard_rdp);
++#endif
+ 
+   peer->Close (peer);
+   g_clear_pointer (&session_rdp->socket_thread, g_thread_join);
+@@ -1823,6 +1829,7 @@ on_pipewire_stream_closed (GrdRdpPipeWireStream *stream,
+ static void
+ grd_session_rdp_remote_desktop_session_ready (GrdSession *session)
+ {
++#ifdef HAVE_HAVE_RDP_CLIPBOARD
+   GrdSessionRdp *session_rdp = GRD_SESSION_RDP (session);
+   freerdp_peer *peer = session_rdp->peer;
+   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
+@@ -1830,6 +1837,7 @@ grd_session_rdp_remote_desktop_session_ready (GrdSession *session)
+   rdp_peer_context->clipboard_rdp = grd_clipboard_rdp_new (session_rdp,
+                                                            rdp_peer_context->vcm,
+                                                            session_rdp->stop_event);
++#endif
+ }
+ 
+ static void
+diff --git a/src/meson.build b/src/meson.build
+index 8dc284d..049e74d 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -35,12 +35,8 @@ daemon_sources = files([
+ 
+ if have_rdp
+   daemon_sources += files([
+-    'grd-clipboard-rdp.c',
+-    'grd-clipboard-rdp.h',
+     'grd-rdp-event-queue.c',
+     'grd-rdp-event-queue.h',
+-    'grd-rdp-fuse-clipboard.c',
+-    'grd-rdp-fuse-clipboard.h',
+     'grd-rdp-pipewire-stream.c',
+     'grd-rdp-pipewire-stream.h',
+     'grd-rdp-sam.c',
+@@ -51,6 +47,15 @@ if have_rdp
+     'grd-session-rdp.h',
+   ])
+ 
++  if get_option('rdp_clipboard')
++    daemon_sources += files([
++      'grd-clipboard-rdp.c',
++      'grd-clipboard-rdp.h',
++      'grd-rdp-fuse-clipboard.c',
++      'grd-rdp-fuse-clipboard.h',
++    ])
++  endif
++
+   deps += [
+     freerdp_dep,
+     freerdp_client_dep,
