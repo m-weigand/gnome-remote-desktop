@@ -234,6 +234,14 @@ do_render (struct spa_loop *loop,
   if (!frame)
     return 0;
 
+  if (grd_session_vnc_is_client_gone (stream->session))
+    {
+      g_free (frame->data);
+      g_clear_pointer (&frame->rfb_cursor, rfbFreeCursor);
+      g_free (frame);
+      return 0;
+    }
+
   if (frame->rfb_cursor)
     grd_session_vnc_set_cursor (stream->session, frame->rfb_cursor);
 
@@ -318,10 +326,11 @@ process_buffer (GrdVncPipeWireStream *stream,
       int height;
       int y;
 
-      src_stride = buffer->datas[0].chunk->stride;
-      dst_stride = grd_session_vnc_get_framebuffer_stride (stream->session);
       height = stream->spa_format.size.height;
       width = stream->spa_format.size.width;
+      src_stride = buffer->datas[0].chunk->stride;
+      dst_stride = grd_session_vnc_get_stride_for_width (stream->session,
+                                                         width);
 
       frame->data = g_malloc (height * dst_stride);
       for (y = 0; y < height; y++)
@@ -585,7 +594,11 @@ grd_vnc_pipewire_stream_finalize (GObject *object)
 
   g_clear_pointer (&stream->pipewire_core, pw_core_disconnect);
   g_clear_pointer (&stream->pipewire_context, pw_context_destroy);
-  g_clear_pointer (&stream->pipewire_source, g_source_destroy);
+  if (stream->pipewire_source)
+    {
+      g_source_destroy (stream->pipewire_source);
+      g_clear_pointer (&stream->pipewire_source, g_source_unref);
+    }
 
   G_OBJECT_CLASS (grd_vnc_pipewire_stream_parent_class)->finalize (object);
 }

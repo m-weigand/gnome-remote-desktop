@@ -35,7 +35,8 @@ G_DECLARE_FINAL_TYPE (GrdSessionRdp,
 GrdSessionRdp *grd_session_rdp_new (GrdRdpServer      *rdp_server,
                                     GSocketConnection *connection);
 
-int grd_session_rdp_get_framebuffer_stride (GrdSessionRdp *session_rdp);
+int grd_session_rdp_get_stride_for_width (GrdSessionRdp *session_rdp,
+                                          int            width);
 
 void grd_session_rdp_resize_framebuffer (GrdSessionRdp *session_rdp,
                                          uint32_t       width,
@@ -51,8 +52,6 @@ void grd_session_rdp_update_pointer (GrdSessionRdp *session_rdp,
                                      uint16_t       height,
                                      uint8_t       *data);
 
-void grd_session_rdp_move_pointer (GrdSessionRdp *session_rdp,
-                                   uint16_t       x,
-                                   uint16_t       y);
+void grd_session_rdp_hide_pointer (GrdSessionRdp *session_rdp);
 
 #endif /* GRD_SESSION_RDP_H */

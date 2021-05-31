@@ -1,39 +1,84 @@
+deps = [
+  cairo_dep,
+  glib_dep,
+  gio_dep,
+  gio_unix_dep,
+  pipewire_dep,
+  libsecret_dep,
+  libnotify_dep,
+]
+
 daemon_sources = files([
+  'grd-clipboard.c',
+  'grd-clipboard.h',
   'grd-context.c',
   'grd-context.h',
   'grd-daemon.c',
   'grd-daemon.h',
   'grd-damage-utils.c',
   'grd-damage-utils.h',
+  'grd-mime-type.c',
+  'grd-mime-type.h',
   'grd-pipewire-utils.c',
   'grd-pipewire-utils.h',
   'grd-private.h',
   'grd-prompt.c',
   'grd-prompt.h',
-  'grd-rdp-pipewire-stream.c',
-  'grd-rdp-pipewire-stream.h',
-  'grd-rdp-sam.c',
-  'grd-rdp-sam.h',
-  'grd-rdp-server.c',
-  'grd-rdp-server.h',
   'grd-session.c',
   'grd-session.h',
-  'grd-session-rdp.c',
-  'grd-session-rdp.h',
-  'grd-session-vnc.c',
-  'grd-session-vnc.h',
   'grd-settings.c',
   'grd-settings.h',
   'grd-stream.c',
   'grd-stream.h',
   'grd-types.h',
-  'grd-vnc-cursor.c',
-  'grd-vnc-cursor.h',
-  'grd-vnc-pipewire-stream.c',
-  'grd-vnc-pipewire-stream.h',
-  'grd-vnc-server.c',
-  'grd-vnc-server.h',
 ])
+
+if have_rdp
+  daemon_sources += files([
+    'grd-clipboard-rdp.c',
+    'grd-clipboard-rdp.h',
+    'grd-rdp-event-queue.c',
+    'grd-rdp-event-queue.h',
+    'grd-rdp-fuse-clipboard.c',
+    'grd-rdp-fuse-clipboard.h',
+    'grd-rdp-pipewire-stream.c',
+    'grd-rdp-pipewire-stream.h',
+    'grd-rdp-sam.c',
+    'grd-rdp-sam.h',
+    'grd-rdp-server.c',
+    'grd-rdp-server.h',
+    'grd-session-rdp.c',
+    'grd-session-rdp.h',
+  ])
+
+  deps += [
+    freerdp_dep,
+    freerdp_client_dep,
+    freerdp_server_dep,
+    fuse_dep,
+    winpr_dep,
+    xkbcommon_dep,
+  ]
+endif
+
+if have_vnc
+  daemon_sources += files([
+    'grd-clipboard-vnc.c',
+    'grd-clipboard-vnc.h',
+    'grd-session-vnc.c',
+    'grd-session-vnc.h',
+    'grd-vnc-cursor.c',
+    'grd-vnc-cursor.h',
+    'grd-vnc-pipewire-stream.c',
+    'grd-vnc-pipewire-stream.h',
+    'grd-vnc-server.c',
+    'grd-vnc-server.h',
+  ])
+
+  deps += [
+    libvncserver_dep,
+  ]
+endif
 
 gen_daemon_sources = []
 
@@ -52,21 +97,9 @@ control_sources = ([
   'grd-control.c'
 ])
 
-prefix = get_option('prefix')
-libexecdir = join_paths(prefix, get_option('libexecdir'))
-
 executable('gnome-remote-desktop-daemon',
            daemon_sources,
-           dependencies: [cairo_dep,
-                          freerdp_dep,
-                          glib_dep,
-                          gio_dep,
-                          gio_unix_dep,
-                          pipewire_dep,
-                          libvncserver_dep,
-                          libsecret_dep,
-                          libnotify_dep,
-                          winpr_dep],
+           dependencies: deps,
            include_directories: [configinc],
            install: true,
            install_dir: libexecdir)
@@ -85,8 +118,6 @@ configure_file(input: 'gnome-remote-desktop.service.in',
                configuration: service_config,
                install_dir: servicedir)
 
-datadir = join_paths(prefix, get_option('datadir'))
-schemadir = join_paths(datadir, 'glib-2.0', 'schemas')
 custom_target('gsettings-enums',
               input: 'grd-enums.h',
               output: 'org.gnome.desktop.remote-desktop.enums.xml',
