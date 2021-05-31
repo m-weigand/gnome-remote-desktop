@@ -1,4 +1,4 @@
-gnome-remote-desktop (40.1-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (40.1-1) experimental; urgency=medium
 
   * New upstream release:
   * debian/control:
@@ -12,7 +12,7 @@ gnome-remote-desktop (40.1-1) UNRELEASED; urgency=medium
   * debian/rules: Disable RDP clipboard in ubuntu builds.
     RDP clipboard requires libfuse-3 that is not in ubuntu main yet
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Mon, 31 May 2021 18:01:47 +0200
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Mon, 31 May 2021 18:03:34 +0200
 
 gnome-remote-desktop (0.1.9-5) unstable; urgency=medium
 
