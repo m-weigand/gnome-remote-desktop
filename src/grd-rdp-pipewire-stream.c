@@ -49,9 +49,7 @@ typedef struct _GrdRdpFrame
   uint16_t pointer_hotspot_y;
   uint16_t pointer_width;
   uint16_t pointer_height;
-  bool pointer_moved;
-  uint16_t pointer_x;
-  uint16_t pointer_y;
+  gboolean pointer_is_hidden;
 } GrdRdpFrame;
 
 struct _GrdRdpPipeWireStream
@@ -240,17 +238,18 @@ do_render (struct spa_loop *loop,
     grd_session_rdp_take_buffer (stream->session_rdp, frame->data);
 
   if (frame->pointer_bitmap)
-    grd_session_rdp_update_pointer (stream->session_rdp,
-                                    frame->pointer_hotspot_x,
-                                    frame->pointer_hotspot_y,
-                                    frame->pointer_width,
-                                    frame->pointer_height,
-                                    frame->pointer_bitmap);
-
-  if (frame->pointer_moved)
-    grd_session_rdp_move_pointer (stream->session_rdp,
-                                  frame->pointer_x,
-                                  frame->pointer_y);
+    {
+      grd_session_rdp_update_pointer (stream->session_rdp,
+                                      frame->pointer_hotspot_x,
+                                      frame->pointer_hotspot_y,
+                                      frame->pointer_width,
+                                      frame->pointer_height,
+                                      frame->pointer_bitmap);
+    }
+  else if (frame->pointer_is_hidden)
+    {
+      grd_session_rdp_hide_pointer (stream->session_rdp);
+    }
 
   g_free (frame);
 
@@ -321,10 +320,11 @@ process_buffer (GrdRdpPipeWireStream *stream,
       int width;
       int y;
 
-      src_stride = buffer->datas[0].chunk->stride;
-      dst_stride = grd_session_rdp_get_framebuffer_stride (stream->session_rdp);
       height = stream->spa_format.size.height;
       width = stream->spa_format.size.width;
+      src_stride = buffer->datas[0].chunk->stride;
+      dst_stride = grd_session_rdp_get_stride_for_width (stream->session_rdp,
+                                                         width);
 
       frame->data = g_malloc (height * dst_stride);
       for (y = 0; y < height; ++y)
@@ -365,17 +365,17 @@ process_buffer (GrdRdpPipeWireStream *stream,
           uint8_t *buf;
 
           buf = SPA_MEMBER (spa_meta_bitmap, spa_meta_bitmap->offset, uint8_t);
-          frame->pointer_bitmap = g_memdup (buf, spa_meta_bitmap->size.height *
-                                                 spa_meta_bitmap->stride);
+          frame->pointer_bitmap = g_memdup2 (buf, spa_meta_bitmap->size.height *
+                                                  spa_meta_bitmap->stride);
           frame->pointer_hotspot_x = spa_meta_cursor->hotspot.x;
           frame->pointer_hotspot_y = spa_meta_cursor->hotspot.y;
           frame->pointer_width = spa_meta_bitmap->size.width;
           frame->pointer_height = spa_meta_bitmap->size.height;
         }
-
-      frame->pointer_moved = true;
-      frame->pointer_x = spa_meta_cursor->position.x;
-      frame->pointer_y = spa_meta_cursor->position.y;
+      else if (spa_meta_bitmap)
+        {
+          frame->pointer_is_hidden = TRUE;
+        }
     }
 
   return g_steal_pointer (&frame);
@@ -577,7 +577,11 @@ grd_rdp_pipewire_stream_finalize (GObject *object)
 
   g_clear_pointer (&stream->pipewire_core, pw_core_disconnect);
   g_clear_pointer (&stream->pipewire_context, pw_context_destroy);
-  g_clear_pointer (&stream->pipewire_source, g_source_destroy);
+  if (stream->pipewire_source)
+    {
+      g_source_destroy (stream->pipewire_source);
+      g_clear_pointer (&stream->pipewire_source, g_source_unref);
+    }
 
   G_OBJECT_CLASS (grd_rdp_pipewire_stream_parent_class)->finalize (object);
 }

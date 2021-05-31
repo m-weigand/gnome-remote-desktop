@@ -28,6 +28,7 @@
 #include <linux/input.h>
 #include <rfb/rfb.h>
 
+#include "grd-clipboard-vnc.h"
 #include "grd-context.h"
 #include "grd-prompt.h"
 #include "grd-settings.h"
@@ -66,6 +67,8 @@ struct _GrdSessionVnc
   int prev_y;
   int prev_button_mask;
   GHashTable *pressed_keys;
+
+  GrdClipboardVnc *clipboard_vnc;
 };
 
 G_DEFINE_TYPE (GrdSessionVnc, grd_session_vnc, GRD_TYPE_SESSION);
@@ -199,6 +202,14 @@ grd_session_vnc_move_cursor (GrdSessionVnc *session_vnc,
   session_vnc->rfb_client->cursorWasMoved = TRUE;
 }
 
+void
+grd_session_vnc_set_client_clipboard_text (GrdSessionVnc *session_vnc,
+                                           char          *text,
+                                           int            text_length)
+{
+  rfbSendServerCutText(session_vnc->rfb_screen, text, text_length);
+}
+
 static void
 maybe_queue_close_session_idle (GrdSessionVnc *session_vnc)
 {
@@ -207,6 +218,12 @@ maybe_queue_close_session_idle (GrdSessionVnc *session_vnc)
 
   session_vnc->close_session_idle_id =
     g_idle_add (close_session_idle, session_vnc);
+}
+
+gboolean
+grd_session_vnc_is_client_gone (GrdSessionVnc *session_vnc)
+{
+  return !session_vnc->rfb_client;
 }
 
 static void
@@ -218,6 +235,7 @@ handle_client_gone (rfbClientPtr rfb_client)
 
   grd_session_vnc_detach_source (session_vnc);
   maybe_queue_close_session_idle (session_vnc);
+  session_vnc->rfb_client = NULL;
 }
 
 static void
@@ -362,6 +380,17 @@ handle_release_all_keys (rfbClientPtr rfb_client)
   g_hash_table_foreach_remove (session_vnc->pressed_keys,
                                notify_keyboard_key_released,
                                session_vnc);
+}
+
+static void
+handle_set_clipboard_text (char         *text,
+                           int           text_length,
+                           rfbClientPtr  rfb_client)
+{
+  GrdSessionVnc *session_vnc = rfb_client->screen->screenData;
+  GrdClipboardVnc *clipboard_vnc = session_vnc->clipboard_vnc;
+
+  grd_clipboard_vnc_set_clipboard_text (clipboard_vnc, text, text_length);
 }
 
 static void
@@ -512,9 +541,10 @@ check_rfb_password (rfbClientPtr  rfb_client,
 }
 
 int
-grd_session_vnc_get_framebuffer_stride (GrdSessionVnc *session_vnc)
+grd_session_vnc_get_stride_for_width (GrdSessionVnc *session_vnc,
+                                      int            width)
 {
-  return session_vnc->rfb_screen->paddedWidthInBytes;
+  return width * BGRX_BYTES_PER_PIXEL;
 }
 
 static void
@@ -535,6 +565,8 @@ init_vnc_session (GrdSessionVnc *session_vnc)
 
   update_server_format (session_vnc);
 
+  session_vnc->clipboard_vnc = grd_clipboard_vnc_new (session_vnc);
+
   socket = g_socket_connection_get_socket (session_vnc->connection);
   rfb_screen->inetdSock = g_socket_get_fd (socket);
   rfb_screen->desktopName = "GNOME";
@@ -548,6 +580,7 @@ init_vnc_session (GrdSessionVnc *session_vnc)
 
   rfb_screen->kbdAddEvent = handle_key_event;
   rfb_screen->kbdReleaseAllKeys = handle_release_all_keys;
+  rfb_screen->setXCutText = handle_set_clipboard_text;
   rfb_screen->ptrAddEvent = handle_pointer_event;
 
   rfb_screen->frameBuffer = g_malloc0 (screen_width * screen_height * 4);
@@ -577,6 +610,17 @@ handle_socket_data (GSocket *socket,
                                       session_vnc->pending_framebuffer_width,
                                       session_vnc->pending_framebuffer_height);
               session_vnc->pending_framebuffer_resize = FALSE;
+
+              /**
+               * This is a workaround. libvncserver is unable to handle clipboard
+               * changes early and either disconnects the client or crashes g-r-d
+               * if it receives rfbSendServerCutText too early altough the
+               * authentification process is already done.
+               * Doing this after resizing the framebuffer, seems to work fine,
+               * so enable the clipboard here and not when the remote desktop
+               * session proxy is acquired.
+               */
+              grd_clipboard_vnc_maybe_enable_clipboard (session_vnc->clipboard_vnc);
             }
         }
     }
@@ -655,14 +699,11 @@ grd_session_vnc_stop (GrdSession *session)
   grd_session_vnc_detach_source (session_vnc);
 
   g_clear_object (&session_vnc->connection);
+  g_clear_object (&session_vnc->clipboard_vnc);
   g_clear_pointer (&session_vnc->rfb_screen->frameBuffer, g_free);
   g_clear_pointer (&session_vnc->rfb_screen, rfbScreenCleanup);
 
-  if (session_vnc->close_session_idle_id)
-    {
-      g_source_remove (session_vnc->close_session_idle_id);
-      session_vnc->close_session_idle_id = 0;
-    }
+  g_clear_handle_id (&session_vnc->close_session_idle_id, g_source_remove);
 }
 
 static gboolean

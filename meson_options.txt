@@ -1,3 +1,13 @@
+option('rdp',
+       type: 'boolean',
+       value: true,
+       description: 'Enable the RDP backend')
+
+option('vnc',
+       type: 'boolean',
+       value: true,
+       description: 'Enable the VNC backend')
+
 option('systemd_user_unit_dir',
        type: 'string',
        value: '',
