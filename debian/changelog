@@ -1,8 +1,18 @@
 gnome-remote-desktop (40.1-1) UNRELEASED; urgency=medium
 
-  * New upstream release
+  * New upstream release:
+  * debian/control:
+    - Update build-dependencies to follow upstream
+    - Also depend on any libmutter-8 version
+  * debian/patches:
+    - Remove patches merged upstream
+    - Add option to disable rdp clipboard support.
+      This requires libfuse-3 which is not in Ubuntu main yet, so add an
+      option to disable it
+  * debian/rules: Disable RDP clipboard in ubuntu builds.
+    RDP clipboard requires libfuse-3 that is not in ubuntu main yet
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Mon, 31 May 2021 15:46:06 +0200
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Mon, 31 May 2021 18:01:47 +0200
 
 gnome-remote-desktop (0.1.9-5) unstable; urgency=medium
 
