@@ -72,14 +72,14 @@ index ca2908b..e97a72c 100644
         type: 'boolean',
         value: true,
 diff --git a/src/grd-session-rdp.c b/src/grd-session-rdp.c
-index 5b59eb9..fc6233c 100644
+index 5b59eb9..5e27fa6 100644
 --- a/src/grd-session-rdp.c
 +++ b/src/grd-session-rdp.c
 @@ -28,7 +28,9 @@
  #include <linux/input-event-codes.h>
  #include <xkbcommon/xkbcommon.h>
  
-+#ifdef HAVE_HAVE_RDP_CLIPBOARD
++#ifdef HAVE_RDP_CLIPBOARD
  #include "grd-clipboard-rdp.h"
 +#endif
  #include "grd-context.h"
@@ -89,7 +89,7 @@ index 5b59eb9..fc6233c 100644
    /* Virtual Channel Manager */
    HANDLE vcm;
  
-+#ifdef HAVE_HAVE_RDP_CLIPBOARD
++#ifdef HAVE_RDP_CLIPBOARD
    GrdClipboardRdp *clipboard_rdp;
 +#endif
  } RdpPeerContext;
@@ -99,7 +99,7 @@ index 5b59eb9..fc6233c 100644
  
    g_clear_object (&session_rdp->pipewire_stream);
  
-+#ifdef HAVE_HAVE_RDP_CLIPBOARD
++#ifdef HAVE_RDP_CLIPBOARD
    g_clear_object (&rdp_peer_context->clipboard_rdp);
 +#endif
  
@@ -109,7 +109,7 @@ index 5b59eb9..fc6233c 100644
  static void
  grd_session_rdp_remote_desktop_session_ready (GrdSession *session)
  {
-+#ifdef HAVE_HAVE_RDP_CLIPBOARD
++#ifdef HAVE_RDP_CLIPBOARD
    GrdSessionRdp *session_rdp = GRD_SESSION_RDP (session);
    freerdp_peer *peer = session_rdp->peer;
    RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
