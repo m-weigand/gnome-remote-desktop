@@ -1,3 +1,9 @@
+gnome-remote-desktop (40.1-2) experimental; urgency=medium
+
+  * debian/patches: Fix a typo causing RDP clipboard not to be enabled in debian
+
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 01 Jun 2021 13:04:42 +0200
+
 gnome-remote-desktop (40.1-1) experimental; urgency=medium
 
   * New upstream release:
