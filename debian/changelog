@@ -1,4 +1,4 @@
-gnome-remote-desktop (40.1-3) UNRELEASED; urgency=medium
+gnome-remote-desktop (40.1-3) experimental; urgency=medium
 
   * Drop direct dependency on libmutter
   * Build-Depend on dh-sequence-gnome instead of gnome-pkg-tools
