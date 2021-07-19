@@ -8,8 +8,8 @@ Priority: optional
 Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
 Uploaders: Jeremy Bicha <jbicha@debian.org>, Laurent Bigonville <bigon@debian.org>
 Build-Depends: debhelper-compat (= 12),
+               dh-sequence-gnome,
                freerdp2-dev (>= 2.3.0),
-               gnome-pkg-tools,
                libcairo2-dev,
                libfuse3-dev (>= 3.9.1),
                libglib2.0-dev (>= 2.68),
