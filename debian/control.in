@@ -32,6 +32,3 @@ Description: Remote desktop daemon for GNOME using PipeWire
  This daemon enables GNOME to offer remote desktop sharing using VNC
  with PipeWire. It supports both GNOME on X and GNOME on Wayland.
  Remote sharing can be enabled and managed in the GNOME Settings app.
- .
- This feature will not work on Ubuntu until mutter is recompiled
- with the remote desktop option enabled.
