@@ -7,7 +7,7 @@ export DEB_LDFLAGS_MAINT_APPEND = -Wl,-O1 -Wl,-z,defs
 	dh $@
 
 override_dh_auto_configure:
-ifeq (yes,$(shell dpkg-vendor --derives-from Ubuntu && echo yes))
+ifeq ($(shell dpkg-vendor --query vendor),Ubuntu)
 	# Disable RDP clipboard in ubuntu as it requires libfuse-3, not in main yet
 	dh_auto_configure -- \
 		-Drdp_clipboard=false
