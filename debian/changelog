@@ -1,8 +1,12 @@
-gnome-remote-desktop (40.2-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (40.2-1) unstable; urgency=medium
 
   * New upstream release
+  * Drop bash patch since similar fix was applied in new release
+  * debian/rules: Only disable RDP clipboard on Ubuntu, not derivatives
+  * Bump debhelper-compat to 13
+  * Bump Standards-Version to 4.6.0
 
- -- Jeremy Bicha <jbicha@debian.org>  Sat, 18 Sep 2021 19:12:27 -0400
+ -- Jeremy Bicha <jbicha@debian.org>  Sat, 18 Sep 2021 22:07:18 -0400
 
 gnome-remote-desktop (40.1-4) unstable; urgency=medium
 
