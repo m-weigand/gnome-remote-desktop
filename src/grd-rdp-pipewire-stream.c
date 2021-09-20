@@ -44,6 +44,9 @@ static guint signals[N_SIGNALS];
 typedef struct _GrdRdpFrame
 {
   void *data;
+  uint16_t width;
+  uint16_t height;
+
   uint8_t *pointer_bitmap;
   uint16_t pointer_hotspot_x;
   uint16_t pointer_hotspot_y;
@@ -235,7 +238,10 @@ do_render (struct spa_loop *loop,
     return 0;
 
   if (frame->data)
-    grd_session_rdp_take_buffer (stream->session_rdp, frame->data);
+    {
+      grd_session_rdp_take_buffer (stream->session_rdp, frame->data,
+                                   frame->width, frame->height);
+    }
 
   if (frame->pointer_bitmap)
     {
@@ -333,6 +339,8 @@ process_buffer (GrdRdpPipeWireStream *stream,
                   ((uint8_t *) src_data) + y * src_stride,
                   width * 4);
         }
+      frame->width = width;
+      frame->height = height;
     }
 
   if (map)
@@ -432,6 +440,7 @@ static const struct pw_stream_events stream_events = {
 
 static gboolean
 connect_to_stream (GrdRdpPipeWireStream  *stream,
+                   uint32_t               refresh_rate,
                    GError               **error)
 {
   struct pw_stream *pipewire_stream;
@@ -451,7 +460,7 @@ connect_to_stream (GrdRdpPipeWireStream  *stream,
   min_rect = SPA_RECTANGLE (1, 1);
   max_rect = SPA_RECTANGLE (INT32_MAX, INT32_MAX);
   min_framerate = SPA_FRACTION (1, 1);
-  max_framerate = SPA_FRACTION (30, 1);
+  max_framerate = SPA_FRACTION (refresh_rate, 1);
 
   pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof (params_buffer));
   params[0] = spa_pod_builder_add_object (
@@ -515,6 +524,7 @@ static const struct pw_core_events core_events = {
 GrdRdpPipeWireStream *
 grd_rdp_pipewire_stream_new (GrdSessionRdp  *session_rdp,
                              uint32_t        src_node_id,
+                             uint32_t        refresh_rate,
                              GError        **error)
 {
   g_autoptr (GrdRdpPipeWireStream) stream = NULL;
@@ -557,7 +567,7 @@ grd_rdp_pipewire_stream_new (GrdSessionRdp  *session_rdp,
                         &core_events,
                         stream);
 
-  if (!connect_to_stream (stream, error))
+  if (!connect_to_stream (stream, refresh_rate, error))
     return NULL;
 
   return g_steal_pointer (&stream);

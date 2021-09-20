@@ -39,14 +39,26 @@ if have_rdp
     'grd-clipboard-rdp.h',
     'grd-rdp-event-queue.c',
     'grd-rdp-event-queue.h',
+    'grd-rdp-frame-info.h',
     'grd-rdp-fuse-clipboard.c',
     'grd-rdp-fuse-clipboard.h',
+    'grd-rdp-gfx-frame-log.c',
+    'grd-rdp-gfx-frame-log.h',
+    'grd-rdp-gfx-surface.c',
+    'grd-rdp-gfx-surface.h',
+    'grd-rdp-graphics-pipeline.c',
+    'grd-rdp-graphics-pipeline.h',
+    'grd-rdp-network-autodetection.c',
+    'grd-rdp-network-autodetection.h',
     'grd-rdp-pipewire-stream.c',
     'grd-rdp-pipewire-stream.h',
+    'grd-rdp-private.h',
     'grd-rdp-sam.c',
     'grd-rdp-sam.h',
     'grd-rdp-server.c',
     'grd-rdp-server.h',
+    'grd-rdp-surface.c',
+    'grd-rdp-surface.h',
     'grd-session-rdp.c',
     'grd-session-rdp.h',
   ])
@@ -59,6 +71,18 @@ if have_rdp
     winpr_dep,
     xkbcommon_dep,
   ]
+
+  if have_nvenc
+    daemon_sources += files([
+      'grd-rdp-nvenc.c',
+      'grd-rdp-nvenc.h',
+    ])
+
+    deps += [
+      dl_dep,
+      nvenc_dep,
+    ]
+  endif
 endif
 
 if have_vnc

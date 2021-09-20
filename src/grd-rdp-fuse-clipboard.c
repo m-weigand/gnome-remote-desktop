@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Pascal Nowack
+ * Copyright (C) 2020-2021 Pascal Nowack
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -351,7 +351,7 @@ grd_rdp_fuse_clipboard_clip_data_id_new (GrdRdpFuseClipboard *rdp_fuse_clipboard
       GHashTableIter iter;
       ClipDataEntry *iter_value;
 
-      g_debug ("[FUSE Clipboard] All clipDataIds still used. Removing the oldest one");
+      g_debug ("[FUSE Clipboard] All clipDataIds used. Removing the oldest one");
 
       g_hash_table_iter_init (&iter, rdp_fuse_clipboard->clip_data_table);
       while (g_hash_table_iter_next (&iter, NULL, (gpointer *) &iter_value))
@@ -466,7 +466,7 @@ collect_instant_droppable_clip_data_entry (gpointer key,
 }
 
 static void
-clear_instant_droppable_clip_data_entry (GrdRdpFuseClipboard *rdp_fuse_clipboard)
+clear_instant_droppable_clip_data_entries (GrdRdpFuseClipboard *rdp_fuse_clipboard)
 {
   GList *droppable_clip_data_entries = NULL;
   GList *l;
@@ -517,7 +517,7 @@ grd_rdp_fuse_clipboard_lazily_clear_all_cdi_selections (GrdRdpFuseClipboard *rdp
 
   g_mutex_lock (&rdp_fuse_clipboard->selection_mutex);
   g_mutex_lock (&rdp_fuse_clipboard->filesystem_mutex);
-  clear_instant_droppable_clip_data_entry (rdp_fuse_clipboard);
+  clear_instant_droppable_clip_data_entries (rdp_fuse_clipboard);
 
   g_hash_table_foreach (rdp_fuse_clipboard->clip_data_table,
                         maybe_set_clip_data_entry_timeout,
@@ -603,11 +603,7 @@ get_parent_directory (GrdRdpFuseClipboard *rdp_fuse_clipboard,
 
 static gboolean
 set_selection_for_clip_data_entry (GrdRdpFuseClipboard *rdp_fuse_clipboard,
-#ifdef HAVE_FREERDP_2_3
                                    FILEDESCRIPTORW     *files,
-#else
-                                   FILEDESCRIPTOR      *files,
-#endif /* HAVE_FREERDP_2_3 */
                                    uint32_t             n_files,
                                    ClipDataEntry       *entry)
 {
@@ -622,11 +618,7 @@ set_selection_for_clip_data_entry (GrdRdpFuseClipboard *rdp_fuse_clipboard,
 
   for (i = 0; i < n_files; ++i)
     {
-#ifdef HAVE_FREERDP_2_3
       FILEDESCRIPTORW *file;
-#else
-      FILEDESCRIPTOR *file;
-#endif /* HAVE_FREERDP_2_3 */
       FuseFile *fuse_file, *parent;
       char *filename = NULL;
       uint32_t j;
@@ -679,11 +671,7 @@ set_selection_for_clip_data_entry (GrdRdpFuseClipboard *rdp_fuse_clipboard,
                             file->nFileSizeLow;
           fuse_file->has_size = TRUE;
         }
-#ifdef HAVE_FREERDP_2_3
       if (file->dwFlags & FD_WRITETIME)
-#else
-      if (file->dwFlags & FD_WRITESTIME)
-#endif /* HAVE_FREERDP_2_3 */
         {
           uint64_t filetime;
 
@@ -708,11 +696,7 @@ set_selection_for_clip_data_entry (GrdRdpFuseClipboard *rdp_fuse_clipboard,
 
 gboolean
 grd_rdp_fuse_clipboard_set_cdi_selection (GrdRdpFuseClipboard *rdp_fuse_clipboard,
-#ifdef HAVE_FREERDP_2_3
                                           FILEDESCRIPTORW     *files,
-#else
-                                          FILEDESCRIPTOR      *files,
-#endif /* HAVE_FREERDP_2_3 */
                                           uint32_t             n_files,
                                           uint32_t             clip_data_id)
 {
@@ -743,11 +727,7 @@ grd_rdp_fuse_clipboard_set_cdi_selection (GrdRdpFuseClipboard *rdp_fuse_clipboar
 
 gboolean
 grd_rdp_fuse_clipboard_set_no_cdi_selection (GrdRdpFuseClipboard *rdp_fuse_clipboard,
-#ifdef HAVE_FREERDP_2_3
                                              FILEDESCRIPTORW     *files,
-#else
-                                             FILEDESCRIPTOR      *files,
-#endif /* HAVE_FREERDP_2_3 */
                                              uint32_t             n_files)
 {
   gboolean result;
