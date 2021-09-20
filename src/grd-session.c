@@ -212,7 +212,7 @@ serialize_mime_type_tables (GList *mime_type_tables)
       GrdMimeTypeTable *mime_type_table = l->data;
       GrdMimeType mime_type;
       const char *mime_type_string;
-      
+
       mime_type = mime_type_table->mime_type;
       mime_type_string = grd_mime_type_to_string (mime_type);
       g_variant_builder_add (&builder, "s", mime_type_string);
@@ -280,7 +280,7 @@ grd_session_set_selection (GrdSession *session,
   GrdSessionPrivate *priv = grd_session_get_instance_private (session);
   GVariant *options_variant;
   g_autoptr (GError) error = NULL;
-  
+
   options_variant = serialize_clipboard_options (mime_type_tables);
 
   if (!grd_dbus_remote_desktop_session_call_set_selection_sync (
@@ -324,10 +324,9 @@ acquire_fd_from_list (GUnixFDList  *fd_list,
   return fd;
 }
 
-uint8_t *
+int
 grd_session_selection_read (GrdSession  *session,
-                            GrdMimeType  mime_type,
-                            uint32_t    *size)
+                            GrdMimeType  mime_type)
 {
   GrdSessionPrivate *priv = grd_session_get_instance_private (session);
   g_autoptr (GError) error = NULL;
@@ -336,7 +335,6 @@ grd_session_selection_read (GrdSession  *session,
   int fd_idx;
   int fd;
   const char *mime_type_string;
-  GArray *data;
 
   mime_type_string = grd_mime_type_to_string (mime_type);
   if (!grd_dbus_remote_desktop_session_call_selection_read_sync (
@@ -344,7 +342,7 @@ grd_session_selection_read (GrdSession  *session,
          &fd_list, NULL, &error))
     {
       g_warning ("Failed to read selection: %s", error->message);
-      return NULL;
+      return -1;
     }
 
   g_variant_get (fd_variant, "h", &fd_idx);
@@ -352,40 +350,10 @@ grd_session_selection_read (GrdSession  *session,
   if (fd == -1)
     {
       g_warning ("Failed to acquire file descriptor: %s", error->message);
-      return NULL;
+      return -1;
     }
 
-  data = g_array_new (FALSE, TRUE, sizeof (uint8_t));
-  while (TRUE)
-    {
-      int len;
-      uint8_t buffer[1024];
-
-      len = read (fd, buffer, G_N_ELEMENTS (buffer));
-      if (len < 0)
-        {
-          if (errno == EAGAIN)
-            continue;
-
-          g_warning ("read() failed: %s", g_strerror (errno));
-          break;
-        }
-      else if (len == 0)
-        {
-          break;
-        }
-      else
-        {
-          g_array_append_vals (data, buffer, len);
-        }
-    }
-
-  if (data->len >= 0)
-    *size = data->len;
-
-  close (fd);
-
-  return (uint8_t *) g_array_free (data, FALSE);
+  return fd;
 }
 
 static void

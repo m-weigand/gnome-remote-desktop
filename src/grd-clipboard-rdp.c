@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Pascal Nowack
+ * Copyright (C) 2020-2021 Pascal Nowack
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -99,7 +99,9 @@ struct _GrdClipboardRdp
   char *fuse_mount_path;
   GrdRdpFuseClipboard *rdp_fuse_clipboard;
   GHashTable *format_data_cache;
+
   GrdMimeType which_unicode_format;
+  ServerFormatDataRequestContext *format_data_request_context;
 
   HANDLE format_data_received_event;
   CLIPRDR_FORMAT_DATA_RESPONSE *format_data_response;
@@ -560,13 +562,8 @@ get_uri_list_from_packet_file_list (GrdClipboardRdp *clipboard_rdp,
                                     uint32_t        *dst_size,
                                     uint32_t         clip_data_id)
 {
-#ifdef HAVE_FREERDP_2_3
   FILEDESCRIPTORW *files = NULL;
   FILEDESCRIPTORW *file;
-#else
-  FILEDESCRIPTOR *files = NULL;
-  FILEDESCRIPTOR *file;
-#endif /* HAVE_FREERDP_2_3 */
   uint32_t n_files = 0;
   char *clip_data_dir_name;
   char *filename = NULL;
@@ -698,13 +695,8 @@ convert_client_content_for_server (GrdClipboardRdp *clipboard_rdp,
   if (mime_type == GRD_MIME_TYPE_TEXT_URILIST ||
       mime_type == GRD_MIME_TYPE_XS_GNOME_COPIED_FILES)
     {
-#ifdef HAVE_FREERDP_2_3
       FILEDESCRIPTORW *files = NULL;
       FILEDESCRIPTORW *file;
-#else
-      FILEDESCRIPTOR *files = NULL;
-      FILEDESCRIPTOR *file;
-#endif /* HAVE_FREERDP_2_3 */
       uint32_t n_files = 0;
       gboolean result;
       char *clip_data_dir_name;
@@ -909,6 +901,142 @@ grd_clipboard_rdp_request_client_content_for_mime_type (GrdClipboard     *clipbo
   return g_memdup2 (dst_data, dst_size);
 }
 
+static void
+serialize_file_list (FILEDESCRIPTORW  *files,
+                     uint32_t          n_files,
+                     uint8_t         **dst_data,
+                     uint32_t         *dst_size)
+{
+  FILEDESCRIPTORW *file;
+  wStream* s = NULL;
+  uint64_t last_write_time;
+  uint32_t i, j;
+
+  if (!files || !dst_data || !dst_size)
+    return;
+
+  if (!(s = Stream_New (NULL, 4 + n_files * CLIPRDR_FILEDESCRIPTOR_SIZE)))
+    return;
+
+  Stream_Write_UINT32 (s, n_files);                    /* cItems */
+  for (i = 0; i < n_files; ++i)
+    {
+      file = &files[i];
+
+      Stream_Write_UINT32 (s, file->dwFlags);          /* flags */
+      Stream_Zero (s, 32);                             /* reserved1 */
+      Stream_Write_UINT32 (s, file->dwFileAttributes); /* fileAttributes */
+      Stream_Zero (s, 16);                             /* reserved2 */
+
+      last_write_time = file->ftLastWriteTime.dwHighDateTime;
+      last_write_time <<= 32;
+      last_write_time += file->ftLastWriteTime.dwLowDateTime;
+
+      Stream_Write_UINT64 (s, last_write_time);        /* lastWriteTime */
+      Stream_Write_UINT32 (s, file->nFileSizeHigh);    /* fileSizeHigh */
+      Stream_Write_UINT32 (s, file->nFileSizeLow);     /* fileSizeLow */
+
+      for (j = 0; j < 260; j++)                        /* cFileName */
+        Stream_Write_UINT16 (s, file->cFileName[j]);
+    }
+
+  Stream_SealLength (s);
+  Stream_GetLength (s, *dst_size);
+  Stream_GetBuffer (s, *dst_data);
+
+  Stream_Free (s, FALSE);
+}
+
+static void
+grd_clipboard_rdp_submit_requested_server_content (GrdClipboard *clipboard,
+                                                   uint8_t      *src_data,
+                                                   uint32_t      src_size)
+{
+  GrdClipboardRdp *clipboard_rdp = GRD_CLIPBOARD_RDP (clipboard);
+  CliprdrServerContext *cliprdr_context = clipboard_rdp->cliprdr_context;
+  ServerFormatDataRequestContext *request_context;
+  CLIPRDR_FORMAT_DATA_RESPONSE format_data_response = {0};
+  GrdMimeType mime_type;
+  uint32_t src_format_id;
+  uint32_t dst_format_id;
+  uint8_t *dst_data = NULL;
+  uint32_t dst_size = 0;
+  BOOL success;
+
+  request_context = g_steal_pointer (&clipboard_rdp->format_data_request_context);
+  mime_type = request_context->mime_type;
+  src_format_id = request_context->src_format_id;
+  dst_format_id = request_context->dst_format_id;
+
+  if (src_data)
+    {
+      if (request_context->needs_conversion)
+        {
+          if (request_context->needs_null_terminator)
+            {
+              char *pnull_terminator;
+
+              src_data = g_realloc (src_data, src_size + 1);
+              pnull_terminator = (char *) src_data + src_size;
+              *pnull_terminator = '\0';
+              ++src_size;
+            }
+
+          success = ClipboardSetData (clipboard_rdp->system,
+                                      src_format_id, src_data, src_size);
+          if (success)
+            {
+              dst_data = ClipboardGetData (clipboard_rdp->system,
+                                           dst_format_id, &dst_size);
+
+              if (dst_data && mime_type == GRD_MIME_TYPE_TEXT_URILIST)
+                {
+                  uint64_t serial = clipboard_rdp->serial;
+                  ClipDataEntry *entry;
+                  FILEDESCRIPTORW *files;
+                  uint32_t n_files;
+
+                  files = (FILEDESCRIPTORW *) dst_data;
+                  n_files = dst_size / sizeof (FILEDESCRIPTORW);
+
+                  dst_data = NULL;
+                  dst_size = 0;
+                  serialize_file_list (files, n_files, &dst_data, &dst_size);
+
+                  g_free (files);
+
+                  clipboard_rdp->has_file_list = TRUE;
+                  if (g_hash_table_lookup_extended (clipboard_rdp->serial_entry_table,
+                                                    GUINT_TO_POINTER (serial),
+                                                    NULL, (gpointer *) &entry))
+                    entry->has_file_list = TRUE;
+                }
+            }
+          if (!success || !dst_data)
+            g_warning ("[RDP.CLIPRDR] Converting clipboard content failed");
+        }
+      else
+        {
+          dst_data = g_steal_pointer (&src_data);
+          dst_size = src_size;
+        }
+    }
+
+  format_data_response.msgType = CB_FORMAT_DATA_RESPONSE;
+  format_data_response.msgFlags = dst_data ? CB_RESPONSE_OK : CB_RESPONSE_FAIL;
+  format_data_response.dataLen = dst_size;
+  format_data_response.requestedFormatData = dst_data;
+
+  cliprdr_context->ServerFormatDataResponse (cliprdr_context,
+                                             &format_data_response);
+
+  g_free (src_data);
+  g_free (dst_data);
+  g_free (request_context);
+
+  SetEvent (clipboard_rdp->completed_format_data_request_event);
+}
+
 /**
  * FreeRDP already updated our capabilites after the client told us
  * about its capabilities, there is nothing to do here
@@ -926,15 +1054,13 @@ cliprdr_client_capabilities (CliprdrServerContext       *cliprdr_context,
   if (cliprdr_context->useLongFormatNames)
     g_strv_builder_add (client_capabilities, "long format names");
   if (cliprdr_context->streamFileClipEnabled)
-    g_strv_builder_add (client_capabilities, "stream file clipping");
+    g_strv_builder_add (client_capabilities, "stream file clip");
   if (cliprdr_context->fileClipNoFilePaths)
     g_strv_builder_add (client_capabilities, "file clip no file paths");
   if (cliprdr_context->canLockClipData)
     g_strv_builder_add (client_capabilities, "can lock clip data");
-#ifdef HAVE_FREERDP_2_3
   if (cliprdr_context->hasHugeFileSupport)
     g_strv_builder_add (client_capabilities, "huge file support");
-#endif /* HAVE_FREERDP_2_3 */
 
   client_caps_strings = g_strv_builder_end (client_capabilities);
   caps_string = g_strjoinv (", ", client_caps_strings);
@@ -968,10 +1094,11 @@ update_server_format_list (gpointer user_data)
   GrdRdpFuseClipboard *rdp_fuse_clipboard = clipboard_rdp->rdp_fuse_clipboard;
   CliprdrServerContext *cliprdr_context = clipboard_rdp->cliprdr_context;
   CLIPRDR_FORMAT_LIST_RESPONSE format_list_response = {0};
-  GList *mime_type_tables = update_context->mime_type_tables;
+  GList *mime_type_tables;
   GrdMimeTypeTable *mime_type_table;
   GList *l;
 
+  mime_type_tables = g_steal_pointer (&update_context->mime_type_tables);
   for (l = mime_type_tables; l; l = l->next)
     {
       mime_type_table = l->data;
@@ -1007,8 +1134,6 @@ update_server_format_list (gpointer user_data)
   if (!cliprdr_context->canLockClipData)
     grd_rdp_fuse_clipboard_dismiss_all_no_cdi_requests (rdp_fuse_clipboard);
 
-  g_free (update_context);
-
   WaitForSingleObject (clipboard_rdp->format_list_received_event, INFINITE);
   clipboard_rdp->server_format_list_update_id = 0;
   ResetEvent (clipboard_rdp->format_list_received_event);
@@ -1017,8 +1142,18 @@ update_server_format_list (gpointer user_data)
   return G_SOURCE_REMOVE;
 }
 
+static void
+update_context_free (gpointer data)
+{
+  ServerFormatListUpdateContext *update_context = data;
+
+  g_clear_list (&update_context->mime_type_tables, g_free);
+
+  g_free (update_context);
+}
+
 /**
- * Client informs us that its clipboard is updated with new clipboard data
+ * Client notifies us that its clipboard is updated with new clipboard data
  */
 static uint32_t
 cliprdr_client_format_list (CliprdrServerContext      *cliprdr_context,
@@ -1026,12 +1161,15 @@ cliprdr_client_format_list (CliprdrServerContext      *cliprdr_context,
 {
   GrdClipboardRdp *clipboard_rdp = cliprdr_context->custom;
   ServerFormatListUpdateContext *update_context;
+  GHashTable *found_mime_types;
   GrdMimeTypeTable *mime_type_table = NULL;
   GList *mime_type_tables = NULL;
   GrdMimeType mime_type;
   gboolean already_has_text_format = FALSE;
   HANDLE events[2];
   uint32_t i;
+
+  found_mime_types = g_hash_table_new (NULL, NULL);
 
   /**
    * The text format CF_TEXT can depend on the CF_LOCALE content. In such
@@ -1051,6 +1189,7 @@ cliprdr_client_format_list (CliprdrServerContext      *cliprdr_context,
           mime_type_table->rdp.format_id = format_list->formats[i].formatId;
           mime_type_tables = g_list_append (mime_type_tables, mime_type_table);
 
+          g_hash_table_add (found_mime_types, GUINT_TO_POINTER (mime_type));
           mime_type = GRD_MIME_TYPE_TEXT_UTF8_STRING;
 
           mime_type_table = g_malloc0 (sizeof (GrdMimeTypeTable));
@@ -1058,6 +1197,7 @@ cliprdr_client_format_list (CliprdrServerContext      *cliprdr_context,
           mime_type_table->rdp.format_id = format_list->formats[i].formatId;
           mime_type_tables = g_list_append (mime_type_tables, mime_type_table);
 
+          g_hash_table_add (found_mime_types, GUINT_TO_POINTER (mime_type));
           already_has_text_format = TRUE;
           g_debug ("[RDP.CLIPRDR] Force using CF_UNICODETEXT over CF_TEXT as "
                    "external format for text/plain;charset=utf-8 and UTF8_STRING");
@@ -1080,16 +1220,22 @@ cliprdr_client_format_list (CliprdrServerContext      *cliprdr_context,
           (strcmp (format_list->formats[i].formatName, "FileGroupDescriptorW") == 0 ||
            strcmp (format_list->formats[i].formatName, "FileGroupDescri") == 0))
         {
-          /**
-           * Advertise the "x-special/gnome-copied-files" format in addition to
-           * the "text/uri-list" format
-           */
-          mime_type = GRD_MIME_TYPE_XS_GNOME_COPIED_FILES;
+          if (!g_hash_table_contains (found_mime_types,
+                                      GUINT_TO_POINTER (GRD_MIME_TYPE_TEXT_URILIST)))
+            {
+              /**
+               * Advertise the "x-special/gnome-copied-files" format in addition to
+               * the "text/uri-list" format
+               */
+              mime_type = GRD_MIME_TYPE_XS_GNOME_COPIED_FILES;
 
-          mime_type_table = g_malloc0 (sizeof (GrdMimeTypeTable));
-          mime_type_table->mime_type = mime_type;
-          mime_type_table->rdp.format_id = format_list->formats[i].formatId;
-          mime_type_tables = g_list_append (mime_type_tables, mime_type_table);
+              mime_type_table = g_malloc0 (sizeof (GrdMimeTypeTable));
+              mime_type_table->mime_type = mime_type;
+              mime_type_table->rdp.format_id = format_list->formats[i].formatId;
+              mime_type_tables = g_list_append (mime_type_tables, mime_type_table);
+
+              g_hash_table_add (found_mime_types, GUINT_TO_POINTER (mime_type));
+            }
 
           mime_type = GRD_MIME_TYPE_TEXT_URILIST;
         }
@@ -1109,11 +1255,15 @@ cliprdr_client_format_list (CliprdrServerContext      *cliprdr_context,
                 {
                   mime_type = GRD_MIME_TYPE_TEXT_PLAIN_UTF8;
 
+                  g_assert (!g_hash_table_contains (found_mime_types,
+                                                    GUINT_TO_POINTER (mime_type)));
+
                   mime_type_table = g_malloc0 (sizeof (GrdMimeTypeTable));
                   mime_type_table->mime_type = mime_type;
                   mime_type_table->rdp.format_id = format_list->formats[i].formatId;
                   mime_type_tables = g_list_append (mime_type_tables,
                                                     mime_type_table);
+                  g_hash_table_add (found_mime_types, GUINT_TO_POINTER (mime_type));
 
                   mime_type = GRD_MIME_TYPE_TEXT_UTF8_STRING;
                   already_has_text_format = TRUE;
@@ -1146,14 +1296,25 @@ cliprdr_client_format_list (CliprdrServerContext      *cliprdr_context,
             }
         }
 
-      if (mime_type != GRD_MIME_TYPE_NONE)
+      if (mime_type != GRD_MIME_TYPE_NONE &&
+          !g_hash_table_contains (found_mime_types, GUINT_TO_POINTER (mime_type)))
         {
           mime_type_table = g_malloc0 (sizeof (GrdMimeTypeTable));
           mime_type_table->mime_type = mime_type;
           mime_type_table->rdp.format_id = format_list->formats[i].formatId;
           mime_type_tables = g_list_append (mime_type_tables, mime_type_table);
+
+          g_hash_table_add (found_mime_types, GUINT_TO_POINTER (mime_type));
+        }
+      else if (mime_type != GRD_MIME_TYPE_NONE)
+        {
+          g_debug ("[RDP.CLIPRDR] Ignoring duplicated format: id: %u, name: %s",
+                   format_list->formats[i].formatId,
+                   format_list->formats[i].formatName);
         }
     }
+
+  g_hash_table_destroy (found_mime_types);
 
   if (clipboard_rdp->server_format_list_update_id)
     {
@@ -1177,7 +1338,8 @@ cliprdr_client_format_list (CliprdrServerContext      *cliprdr_context,
   update_context->mime_type_tables = mime_type_tables;
 
   clipboard_rdp->server_format_list_update_id =
-    g_idle_add (update_server_format_list, update_context);
+    g_idle_add_full (G_PRIORITY_DEFAULT_IDLE, update_server_format_list,
+                     update_context, update_context_free);
   SetEvent (clipboard_rdp->format_list_received_event);
 
   return CHANNEL_RC_OK;
@@ -1381,7 +1543,7 @@ handle_clip_data_entry_destruction (gpointer user_data)
 }
 
 /**
- * Client informs us that the file stream data for a specific clip data id can
+ * Client notifies us that the file stream data for a specific clip data id MUST
  * now be released
  */
 static uint32_t
@@ -1427,165 +1589,47 @@ cliprdr_client_unlock_clipboard_data (CliprdrServerContext                *clipr
   return CHANNEL_RC_OK;
 }
 
-static void
-#ifdef HAVE_FREERDP_2_3
-serialize_file_list (FILEDESCRIPTORW  *files,
-                     uint32_t          n_files,
-                     uint8_t         **dst_data,
-                     uint32_t         *dst_size)
-{
-  FILEDESCRIPTORW *file;
-#else
-serialize_file_list (FILEDESCRIPTOR *files,
-                     uint32_t         n_files,
-                     uint8_t        **dst_data,
-                     uint32_t        *dst_size)
-{
-  FILEDESCRIPTOR *file;
-#endif /* HAVE_FREERDP_2_3 */
-  wStream* s = NULL;
-  uint64_t last_write_time;
-  uint32_t i, j;
-
-  if (!files || !dst_data || !dst_size)
-    return;
-
-  if (!(s = Stream_New (NULL, 4 + n_files * CLIPRDR_FILEDESCRIPTOR_SIZE)))
-    return;
-
-  Stream_Write_UINT32 (s, n_files);                    /* cItems */
-  for (i = 0; i < n_files; ++i)
-    {
-      file = &files[i];
-
-      Stream_Write_UINT32 (s, file->dwFlags);          /* flags */
-      Stream_Zero (s, 32);                             /* reserved1 */
-      Stream_Write_UINT32 (s, file->dwFileAttributes); /* fileAttributes */
-      Stream_Zero (s, 16);                             /* reserved2 */
-
-      last_write_time = file->ftLastWriteTime.dwHighDateTime;
-      last_write_time <<= 32;
-      last_write_time += file->ftLastWriteTime.dwLowDateTime;
-
-      Stream_Write_UINT64 (s, last_write_time);        /* lastWriteTime */
-      Stream_Write_UINT32 (s, file->nFileSizeHigh);    /* fileSizeHigh */
-      Stream_Write_UINT32 (s, file->nFileSizeLow);     /* fileSizeLow */
-
-      for (j = 0; j < 260; j++)                        /* cFileName */
-        Stream_Write_UINT16 (s, file->cFileName[j]);
-    }
-
-  Stream_SealLength (s);
-  Stream_GetLength (s, *dst_size);
-  Stream_GetBuffer (s, *dst_data);
-
-  Stream_Free (s, FALSE);
-}
-
 static gboolean
 request_server_format_data (gpointer user_data)
 {
-  ServerFormatDataRequestContext *request_context = user_data;
-  GrdClipboardRdp *clipboard_rdp = request_context->clipboard_rdp;
+  GrdClipboardRdp *clipboard_rdp = user_data;
   GrdClipboard *clipboard = GRD_CLIPBOARD (clipboard_rdp);
   CliprdrServerContext *cliprdr_context = clipboard_rdp->cliprdr_context;
-  CLIPRDR_FORMAT_DATA_RESPONSE format_data_response = {0};
-  GrdMimeType mime_type = request_context->mime_type;
-  uint32_t src_format_id = request_context->src_format_id;
-  uint32_t dst_format_id = request_context->dst_format_id;
-  uint8_t *src_data, *dst_data;
-  uint32_t src_size, dst_size;
-  BOOL success;
+  ServerFormatDataRequestContext *request_context;
+  GrdMimeType mime_type;
 
-  dst_data = src_data = NULL;
-  dst_size = src_size = 0;
+  request_context = clipboard_rdp->format_data_request_context;
+  mime_type = request_context->mime_type;
 
-  if (g_hash_table_contains (clipboard_rdp->allowed_server_formats,
-                             GUINT_TO_POINTER (mime_type)))
+  if (!g_hash_table_contains (clipboard_rdp->allowed_server_formats,
+                              GUINT_TO_POINTER (mime_type)))
     {
-      src_data = grd_clipboard_request_server_content_for_mime_type (clipboard,
-                                                                     mime_type,
-                                                                     &src_size);
-    }
-  if (src_data)
-    {
-      if (request_context->needs_conversion)
-        {
-          if (request_context->needs_null_terminator)
-            {
-              char *pnull_terminator;
+      CLIPRDR_FORMAT_DATA_RESPONSE format_data_response = {0};
 
-              src_data = g_realloc (src_data, src_size + 1);
-              pnull_terminator = (char *) src_data + src_size;
-              *pnull_terminator = '\0';
-              ++src_size;
-            }
+      format_data_response.msgType = CB_FORMAT_DATA_RESPONSE;
+      format_data_response.msgFlags = CB_RESPONSE_FAIL;
 
-          success = ClipboardSetData (clipboard_rdp->system,
-                                      src_format_id, src_data, src_size);
-          if (success)
-            {
-              dst_data = ClipboardGetData (clipboard_rdp->system,
-                                           dst_format_id, &dst_size);
+      cliprdr_context->ServerFormatDataResponse (cliprdr_context,
+                                                 &format_data_response);
 
-              if (dst_data && mime_type == GRD_MIME_TYPE_TEXT_URILIST)
-                {
-                  uint64_t serial = clipboard_rdp->serial;
-                  ClipDataEntry *entry;
-#ifdef HAVE_FREERDP_2_3
-                  FILEDESCRIPTORW *files;
-                  uint32_t n_files;
+      g_clear_pointer (&clipboard_rdp->format_data_request_context, g_free);
 
-                  files = (FILEDESCRIPTORW *) dst_data;
-                  n_files = dst_size / sizeof (FILEDESCRIPTORW);
-#else
-                  FILEDESCRIPTOR *files;
-                  uint32_t n_files;
+      WaitForSingleObject (clipboard_rdp->format_data_request_received_event,
+                           INFINITE);
+      clipboard_rdp->server_format_data_request_id = 0;
+      ResetEvent (clipboard_rdp->format_data_request_received_event);
+      SetEvent (clipboard_rdp->completed_format_data_request_event);
 
-                  files = (FILEDESCRIPTOR *) dst_data;
-                  n_files = dst_size / sizeof (FILEDESCRIPTOR);
-#endif /* HAVE_FREERDP_2_3 */
-
-                  dst_data = NULL;
-                  dst_size = 0;
-                  serialize_file_list (files, n_files, &dst_data, &dst_size);
-
-                  g_free (files);
-
-                  clipboard_rdp->has_file_list = TRUE;
-                  if (g_hash_table_lookup_extended (clipboard_rdp->serial_entry_table,
-                                                    GUINT_TO_POINTER (serial),
-                                                    NULL, (gpointer *) &entry))
-                    entry->has_file_list = TRUE;
-                }
-            }
-          if (!success || !dst_data)
-            g_warning ("[RDP.CLIPRDR] Converting clipboard content failed");
-        }
-      else
-        {
-          dst_data = g_steal_pointer (&src_data);
-          dst_size = src_size;
-        }
+      return G_SOURCE_REMOVE;
     }
 
-  format_data_response.msgType = CB_FORMAT_DATA_RESPONSE;
-  format_data_response.msgFlags = dst_data ? CB_RESPONSE_OK : CB_RESPONSE_FAIL;
-  format_data_response.dataLen = dst_size;
-  format_data_response.requestedFormatData = dst_data;
-
-  cliprdr_context->ServerFormatDataResponse (cliprdr_context,
-                                             &format_data_response);
-
-  g_free (src_data);
-  g_free (dst_data);
-  g_free (request_context);
+  grd_clipboard_request_server_content_for_mime_type_async (clipboard,
+                                                            mime_type);
 
   WaitForSingleObject (clipboard_rdp->format_data_request_received_event,
                        INFINITE);
   clipboard_rdp->server_format_data_request_id = 0;
   ResetEvent (clipboard_rdp->format_data_request_received_event);
-  SetEvent (clipboard_rdp->completed_format_data_request_event);
 
   return G_SOURCE_REMOVE;
 }
@@ -1686,8 +1730,11 @@ cliprdr_client_format_data_request (CliprdrServerContext              *cliprdr_c
       request_context->needs_null_terminator = needs_null_terminator;
       request_context->needs_conversion = needs_conversion;
 
+      g_assert (!clipboard_rdp->format_data_request_context);
+      clipboard_rdp->format_data_request_context = request_context;
+
       clipboard_rdp->server_format_data_request_id =
-        g_idle_add (request_server_format_data, request_context);
+        g_idle_add (request_server_format_data, clipboard_rdp);
       SetEvent (clipboard_rdp->format_data_request_received_event);
 
       return CHANNEL_RC_OK;
@@ -1967,9 +2014,7 @@ grd_clipboard_rdp_new (GrdSessionRdp *session_rdp,
   cliprdr_context->streamFileClipEnabled = TRUE;
   cliprdr_context->fileClipNoFilePaths = TRUE;
   cliprdr_context->canLockClipData = TRUE;
-#ifdef HAVE_FREERDP_2_3
   cliprdr_context->hasHugeFileSupport = TRUE;
-#endif /* HAVE_FREERDP_2_3 */
 
   cliprdr_context->ClientCapabilities = cliprdr_client_capabilities;
   cliprdr_context->TempDirectory = cliprdr_temp_directory;
@@ -2028,6 +2073,7 @@ grd_clipboard_rdp_dispose (GObject *object)
   if (clipboard_rdp->clipboard_retrieval_id)
     g_clear_pointer (&clipboard_rdp->clipboard_retrieval_context.entry, g_free);
 
+  g_clear_pointer (&clipboard_rdp->format_data_request_context, g_free);
   g_clear_pointer (&clipboard_rdp->queued_server_formats, g_list_free);
   g_clear_pointer (&clipboard_rdp->pending_server_formats, g_list_free);
   g_hash_table_foreach_remove (clipboard_rdp->format_data_cache,
@@ -2155,4 +2201,6 @@ grd_clipboard_rdp_class_init (GrdClipboardRdpClass *klass)
     grd_clipboard_rdp_update_client_mime_type_list;
   clipboard_class->request_client_content_for_mime_type =
     grd_clipboard_rdp_request_client_content_for_mime_type;
+  clipboard_class->submit_requested_server_content =
+    grd_clipboard_rdp_submit_requested_server_content;
 }

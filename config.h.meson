@@ -12,5 +12,8 @@
 /* Defined if VNC backend is enabled */
 #mesondefine HAVE_VNC
 
-/* Defined if FreeRDP >= 2.3.x is available */
-#mesondefine HAVE_FREERDP_2_3
+/* Defined if NVENC is available */
+#mesondefine HAVE_NVENC
+
+/* Path of the data dir */
+#mesondefine GRD_DATA_DIR
