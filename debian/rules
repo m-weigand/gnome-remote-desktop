@@ -10,10 +10,13 @@ override_dh_auto_configure:
 ifeq ($(shell dpkg-vendor --query vendor),Ubuntu)
 	# Disable RDP clipboard in ubuntu as it requires libfuse-3, not in main yet
 	dh_auto_configure -- \
+		-Dnvenc=false \
 		-Drdp_clipboard=false
 else
-	dh_auto_configure
+	dh_auto_configure -- \
+		-Dnvenc=false
 endif
+
 
 override_dh_auto_test:
 	dh_auto_test || true
