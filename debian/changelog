@@ -1,8 +1,10 @@
-gnome-remote-desktop (41.0-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (41.0-1) unstable; urgency=medium
 
   * New upstream release
+  * Rebase rdp-clipboard option patch
+  * debian/control.in: Disable nvenc; needs new libffmpeg-nvenc-dev
 
- -- Jeremy Bicha <jbicha@debian.org>  Mon, 20 Sep 2021 07:10:05 -0400
+ -- Jeremy Bicha <jbicha@debian.org>  Mon, 27 Sep 2021 17:24:20 -0400
 
 gnome-remote-desktop (40.2-1) unstable; urgency=medium
 
