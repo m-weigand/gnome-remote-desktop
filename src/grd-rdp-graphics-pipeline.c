@@ -26,11 +26,12 @@
 #include "grd-rdp-frame-info.h"
 #include "grd-rdp-gfx-surface.h"
 #include "grd-rdp-network-autodetection.h"
+#include "grd-rdp-surface.h"
+#include "grd-session-rdp.h"
+
 #ifdef HAVE_NVENC
 #include "grd-rdp-nvenc.h"
 #endif /* HAVE_NVENC */
-#include "grd-rdp-surface.h"
-#include "grd-session-rdp.h"
 
 #define ENC_TIMES_CHECK_INTERVAL_MS 1000
 #define MAX_TRACKED_ENC_FRAMES 1000
@@ -71,6 +72,7 @@ struct _GrdRdpGraphicsPipeline
   uint32_t initial_version;
 
   GrdSessionRdp *session_rdp;
+  GMainContext *pipeline_context;
   GrdRdpNetworkAutodetection *network_autodetection;
   wStream *encode_stream;
   RFX_CONTEXT *rfx_context;
@@ -879,7 +881,8 @@ ensure_rtt_receivement (GrdRdpGraphicsPipeline *graphics_pipeline)
     g_timeout_source_new (ENC_TIMES_CHECK_INTERVAL_MS);
   g_source_set_callback (graphics_pipeline->rtt_pause_source, maybe_slow_down_rtts,
                          graphics_pipeline, NULL);
-  g_source_attach (graphics_pipeline->rtt_pause_source, NULL);
+  g_source_attach (graphics_pipeline->rtt_pause_source,
+                   graphics_pipeline->pipeline_context);
 }
 
 void
@@ -910,8 +913,8 @@ grd_rdp_graphics_pipeline_refresh_gfx (GrdRdpGraphicsPipeline *graphics_pipeline
   if (!rdp_surface->gfx_surface)
     {
       rdp_surface->gfx_surface = grd_rdp_gfx_surface_new (
-        graphics_pipeline, session_rdp, rdp_surface,
-        get_next_free_surface_id (graphics_pipeline),
+        graphics_pipeline, session_rdp, graphics_pipeline->pipeline_context,
+        rdp_surface, get_next_free_surface_id (graphics_pipeline),
         get_next_free_serial (graphics_pipeline));
       map_surface_to_output (graphics_pipeline, rdp_surface->gfx_surface);
     }
@@ -1133,8 +1136,6 @@ handle_frame_ack_event (GrdRdpGraphicsPipeline             *graphics_pipeline,
       uint32_t surface_serial;
 
       surface_serial = GPOINTER_TO_UINT (value);
-      surface_serial_unref (graphics_pipeline, surface_serial);
-
       if (!g_hash_table_lookup_extended (graphics_pipeline->serial_surface_table,
                                          GUINT_TO_POINTER (surface_serial),
                                          NULL, (gpointer *) &surface_context))
@@ -1146,6 +1147,8 @@ handle_frame_ack_event (GrdRdpGraphicsPipeline             *graphics_pipeline,
                                          frame_acknowledge->frameId,
                                          g_get_monotonic_time ());
         }
+
+      surface_serial_unref (graphics_pipeline, surface_serial);
     }
 
   if (frame_acknowledge->queueDepth == SUSPEND_FRAME_ACKNOWLEDGEMENT)
@@ -1203,6 +1206,7 @@ grd_rdp_graphics_pipeline_maybe_init (GrdRdpGraphicsPipeline *graphics_pipeline)
 
 GrdRdpGraphicsPipeline *
 grd_rdp_graphics_pipeline_new (GrdSessionRdp              *session_rdp,
+                               GMainContext               *pipeline_context,
                                HANDLE                      vcm,
                                HANDLE                      stop_event,
                                rdpContext                 *rdp_context,
@@ -1221,6 +1225,7 @@ grd_rdp_graphics_pipeline_new (GrdSessionRdp              *session_rdp,
   graphics_pipeline->rdpgfx_context = rdpgfx_context;
   graphics_pipeline->stop_event = stop_event;
   graphics_pipeline->session_rdp = session_rdp;
+  graphics_pipeline->pipeline_context = pipeline_context;
   graphics_pipeline->network_autodetection = network_autodetection;
   graphics_pipeline->encode_stream = encode_stream;
   graphics_pipeline->rfx_context = rfx_context;
@@ -1504,7 +1509,7 @@ grd_rdp_graphics_pipeline_init (GrdRdpGraphicsPipeline *graphics_pipeline)
   g_source_set_callback (protocol_reset_source, reset_protocol,
                          graphics_pipeline, NULL);
   g_source_set_ready_time (protocol_reset_source, -1);
-  g_source_attach (protocol_reset_source, NULL);
+  g_source_attach (protocol_reset_source, graphics_pipeline->pipeline_context);
   graphics_pipeline->protocol_reset_source = protocol_reset_source;
 }
 

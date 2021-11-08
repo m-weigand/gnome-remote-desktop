@@ -47,6 +47,7 @@ typedef struct _GrdRdpFrame
   uint16_t width;
   uint16_t height;
 
+  gboolean has_pointer_data;
   uint8_t *pointer_bitmap;
   uint16_t pointer_hotspot_x;
   uint16_t pointer_hotspot_y;
@@ -67,6 +68,7 @@ struct _GrdRdpPipeWireStream
 
   struct spa_hook pipewire_core_listener;
 
+  GSource *render_source;
   GMutex frame_mutex;
   GrdRdpFrame *pending_frame;
 
@@ -80,6 +82,69 @@ struct _GrdRdpPipeWireStream
 
 G_DEFINE_TYPE (GrdRdpPipeWireStream, grd_rdp_pipewire_stream,
                G_TYPE_OBJECT)
+
+static gboolean
+do_render (gpointer user_data)
+{
+  GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
+  GrdRdpFrame *frame;
+
+  g_mutex_lock (&stream->frame_mutex);
+  frame = g_steal_pointer (&stream->pending_frame);
+  g_mutex_unlock (&stream->frame_mutex);
+
+  if (!frame)
+    return G_SOURCE_CONTINUE;
+
+  if (frame->data)
+    {
+      grd_session_rdp_take_buffer (stream->session_rdp, frame->data,
+                                   frame->width, frame->height);
+    }
+
+  if (frame->pointer_bitmap)
+    {
+      grd_session_rdp_update_pointer (stream->session_rdp,
+                                      frame->pointer_hotspot_x,
+                                      frame->pointer_hotspot_y,
+                                      frame->pointer_width,
+                                      frame->pointer_height,
+                                      frame->pointer_bitmap);
+    }
+  else if (frame->pointer_is_hidden)
+    {
+      grd_session_rdp_hide_pointer (stream->session_rdp);
+    }
+
+  g_free (frame);
+
+  return G_SOURCE_CONTINUE;
+}
+
+static gboolean
+render_source_dispatch (GSource     *source,
+                        GSourceFunc  callback,
+                        gpointer     user_data)
+{
+  g_source_set_ready_time (source, -1);
+
+  return callback (user_data);
+}
+
+static GSourceFuncs render_source_funcs =
+{
+  .dispatch = render_source_dispatch,
+};
+
+static void
+create_render_source (GrdRdpPipeWireStream *stream,
+                      GMainContext         *render_context)
+{
+  stream->render_source = g_source_new (&render_source_funcs, sizeof (GSource));
+  g_source_set_callback (stream->render_source, do_render, stream, NULL);
+  g_source_set_ready_time (stream->render_source, -1);
+  g_source_attach (stream->render_source, render_context);
+}
 
 static gboolean
 pipewire_loop_source_prepare (GSource *base,
@@ -177,8 +242,6 @@ on_stream_param_changed (void                 *user_data,
   GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
   uint8_t params_buffer[1024];
   struct spa_pod_builder pod_builder;
-  int width;
-  int height;
   const struct spa_pod *params[3];
 
   if (!format || id != SPA_PARAM_Format)
@@ -187,11 +250,6 @@ on_stream_param_changed (void                 *user_data,
   spa_format_video_raw_parse (format, &stream->spa_format);
 
   pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof (params_buffer));
-
-  width = stream->spa_format.size.width;
-  height = stream->spa_format.size.height;
-
-  grd_session_rdp_resize_framebuffer (stream->session_rdp, width, height);
 
   params[0] = spa_pod_builder_add_object (
     &pod_builder,
@@ -217,49 +275,6 @@ on_stream_param_changed (void                 *user_data,
 
   pw_stream_update_params (stream->pipewire_stream,
                            params, G_N_ELEMENTS (params));
-}
-
-static int
-do_render (struct spa_loop *loop,
-           bool             async,
-           uint32_t         seq,
-           const void      *data,
-           size_t           size,
-           void            *user_data)
-{
-  GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
-  GrdRdpFrame *frame;
-
-  g_mutex_lock (&stream->frame_mutex);
-  frame = g_steal_pointer (&stream->pending_frame);
-  g_mutex_unlock (&stream->frame_mutex);
-
-  if (!frame)
-    return 0;
-
-  if (frame->data)
-    {
-      grd_session_rdp_take_buffer (stream->session_rdp, frame->data,
-                                   frame->width, frame->height);
-    }
-
-  if (frame->pointer_bitmap)
-    {
-      grd_session_rdp_update_pointer (stream->session_rdp,
-                                      frame->pointer_hotspot_x,
-                                      frame->pointer_hotspot_y,
-                                      frame->pointer_width,
-                                      frame->pointer_height,
-                                      frame->pointer_bitmap);
-    }
-  else if (frame->pointer_is_hidden)
-    {
-      grd_session_rdp_hide_pointer (stream->session_rdp);
-    }
-
-  g_free (frame);
-
-  return 0;
 }
 
 static GrdRdpFrame *
@@ -379,10 +394,12 @@ process_buffer (GrdRdpPipeWireStream *stream,
           frame->pointer_hotspot_y = spa_meta_cursor->hotspot.y;
           frame->pointer_width = spa_meta_bitmap->size.width;
           frame->pointer_height = spa_meta_bitmap->size.height;
+          frame->has_pointer_data = TRUE;
         }
       else if (spa_meta_bitmap)
         {
           frame->pointer_is_hidden = TRUE;
+          frame->has_pointer_data = TRUE;
         }
     }
 
@@ -390,11 +407,33 @@ process_buffer (GrdRdpPipeWireStream *stream,
 }
 
 static void
+take_frame_data_from (GrdRdpFrame *src_frame,
+                      GrdRdpFrame *dst_frame)
+{
+  dst_frame->data = g_steal_pointer (&src_frame->data);
+  dst_frame->width = src_frame->width;
+  dst_frame->height = src_frame->height;
+}
+
+static void
+take_pointer_data_from (GrdRdpFrame *src_frame,
+                        GrdRdpFrame *dst_frame)
+{
+  g_assert (!dst_frame->pointer_bitmap);
+  dst_frame->pointer_bitmap = g_steal_pointer (&src_frame->pointer_bitmap);
+
+  dst_frame->pointer_hotspot_x = src_frame->pointer_hotspot_x;
+  dst_frame->pointer_hotspot_y = src_frame->pointer_hotspot_y;
+  dst_frame->pointer_width = src_frame->pointer_width;
+  dst_frame->pointer_height = src_frame->pointer_height;
+  dst_frame->pointer_is_hidden = src_frame->pointer_is_hidden;
+  dst_frame->has_pointer_data = TRUE;
+}
+
+static void
 on_stream_process (void *user_data)
 {
   GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
-  GrdPipeWireSource *pipewire_source =
-    (GrdPipeWireSource *) stream->pipewire_source;
   struct pw_buffer *next_buffer;
   struct pw_buffer *buffer = NULL;
   GrdRdpFrame *frame;
@@ -417,6 +456,11 @@ on_stream_process (void *user_data)
   g_mutex_lock (&stream->frame_mutex);
   if (stream->pending_frame)
     {
+      if (!frame->data && stream->pending_frame->data)
+        take_frame_data_from (stream->pending_frame, frame);
+      if (!frame->has_pointer_data && stream->pending_frame->has_pointer_data)
+        take_pointer_data_from (stream->pending_frame, frame);
+
       g_free (stream->pending_frame->data);
       g_free (stream->pending_frame->pointer_bitmap);
       g_clear_pointer (&stream->pending_frame, g_free);
@@ -426,9 +470,7 @@ on_stream_process (void *user_data)
 
   pw_stream_queue_buffer (stream->pipewire_stream, buffer);
 
-  pw_loop_invoke (pipewire_source->pipewire_loop, do_render,
-                  SPA_ID_INVALID, NULL, 0,
-                  false, stream);
+  g_source_set_ready_time (stream->render_source, 0);
 }
 
 static const struct pw_stream_events stream_events = {
@@ -523,6 +565,7 @@ static const struct pw_core_events core_events = {
 
 GrdRdpPipeWireStream *
 grd_rdp_pipewire_stream_new (GrdSessionRdp  *session_rdp,
+                             GMainContext   *render_context,
                              uint32_t        src_node_id,
                              uint32_t        refresh_rate,
                              GError        **error)
@@ -535,6 +578,8 @@ grd_rdp_pipewire_stream_new (GrdSessionRdp  *session_rdp,
   stream = g_object_new (GRD_TYPE_RDP_PIPEWIRE_STREAM, NULL);
   stream->session_rdp = session_rdp;
   stream->src_node_id = src_node_id;
+
+  create_render_source (stream, render_context);
 
   pipewire_source = create_pipewire_source ();
   if (!pipewire_source)
@@ -591,6 +636,19 @@ grd_rdp_pipewire_stream_finalize (GObject *object)
     {
       g_source_destroy (stream->pipewire_source);
       g_clear_pointer (&stream->pipewire_source, g_source_unref);
+    }
+
+  if (stream->render_source)
+    {
+      g_source_destroy (stream->render_source);
+      g_clear_pointer (&stream->render_source, g_source_unref);
+    }
+
+  if (stream->pending_frame)
+    {
+      g_free (stream->pending_frame->data);
+      g_free (stream->pending_frame->pointer_bitmap);
+      g_clear_pointer (&stream->pending_frame, g_free);
     }
 
   G_OBJECT_CLASS (grd_rdp_pipewire_stream_parent_class)->finalize (object);
