@@ -1,6 +1,10 @@
 gnome-remote-desktop (41.1-1) UNRELEASED; urgency=medium
 
   * New upstream release
+  * d/p/u/meson-Add-option-to-disable-rdp-clipboard-support.patch,
+    debian/rules:
+    - remove hacks to build without RDP clipboard on Ubuntu since fuse3
+      is going to be promoted now.
 
  -- Sebastien Bacher <seb128@ubuntu.com>  Mon, 08 Nov 2021 11:34:20 +0100
 
