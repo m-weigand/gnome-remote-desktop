@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2015 Red Hat Inc.
- * Copyright (C) 2020 Pascal Nowack
+ * Copyright (C) 2020-2021 Pascal Nowack
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -73,6 +73,9 @@ typedef struct _GrdSessionPrivate
   GCancellable *cancellable;
 
   gboolean started;
+
+  gulong caps_lock_state_changed_id;
+  gulong num_lock_state_changed_id;
 } GrdSessionPrivate;
 
 G_DEFINE_TYPE_WITH_PRIVATE (GrdSession, grd_session, G_TYPE_OBJECT);
@@ -90,6 +93,9 @@ grd_session_stop (GrdSession *session)
 {
   GrdSessionPrivate *priv = grd_session_get_instance_private (session);
 
+  if (priv->cancellable && g_cancellable_is_cancelled (priv->cancellable))
+    return;
+
   GRD_SESSION_GET_CLASS (session)->stop (session);
 
   if (priv->remote_desktop_session && priv->started)
@@ -103,6 +109,17 @@ grd_session_stop (GrdSession *session)
           g_error_free (error);
         }
     }
+
+  if (priv->cancellable)
+    g_cancellable_cancel (priv->cancellable);
+
+  g_clear_signal_handler (&priv->caps_lock_state_changed_id,
+                          priv->remote_desktop_session);
+  g_clear_signal_handler (&priv->num_lock_state_changed_id,
+                          priv->remote_desktop_session);
+
+  if (priv->stream)
+    grd_stream_disconnect_proxy_signals (priv->stream);
 
   g_clear_object (&priv->remote_desktop_session);
   g_clear_object (&priv->screen_cast_session);
@@ -143,9 +160,9 @@ grd_session_notify_keyboard_keysym (GrdSession *session,
 }
 
 void
-grd_session_notify_pointer_button (GrdSession *session,
-                                   int32_t        button,
-                                   GrdButtonState state)
+grd_session_notify_pointer_button (GrdSession     *session,
+                                   int32_t         button,
+                                   GrdButtonState  state)
 {
   GrdSessionPrivate *priv = grd_session_get_instance_private (session);
   GrdDBusRemoteDesktopSession *session_proxy = priv->remote_desktop_session;
@@ -266,6 +283,7 @@ grd_session_disable_clipboard (GrdSession *session)
 {
   GrdSessionPrivate *priv = grd_session_get_instance_private (session);
 
+  priv->clipboard = NULL;
   if (!priv->remote_desktop_session)
     return;
 
@@ -324,6 +342,59 @@ acquire_fd_from_list (GUnixFDList  *fd_list,
   return fd;
 }
 
+void
+grd_session_selection_write (GrdSession    *session,
+                             unsigned int   serial,
+                             const uint8_t *data,
+                             uint32_t       size)
+{
+  GrdSessionPrivate *priv = grd_session_get_instance_private (session);
+  g_autoptr (GError) error = NULL;
+  g_autoptr (GVariant) fd_variant = NULL;
+  g_autoptr (GUnixFDList) fd_list = NULL;
+  int fd_idx;
+  int fd;
+
+  if (!data || !size)
+    {
+      grd_dbus_remote_desktop_session_call_selection_write_done (
+        priv->remote_desktop_session, serial, FALSE, NULL, NULL, NULL);
+      return;
+    }
+
+  if (!grd_dbus_remote_desktop_session_call_selection_write_sync (
+         priv->remote_desktop_session, serial, NULL, &fd_variant, &fd_list,
+         NULL, &error))
+    {
+      g_warning ("Failed to write selection for serial %u: %s",
+                 serial, error->message);
+      return;
+    }
+
+  g_variant_get (fd_variant, "h", &fd_idx);
+  fd = acquire_fd_from_list (fd_list, fd_idx, &error);
+  if (fd == -1)
+    {
+      g_warning ("Failed to acquire file descriptor for serial %u: %s",
+                 serial, error->message);
+      return;
+    }
+
+  if (write (fd, data, size) < 0)
+    {
+      grd_dbus_remote_desktop_session_call_selection_write_done (
+        priv->remote_desktop_session, serial, FALSE, NULL, NULL, NULL);
+
+      close (fd);
+      return;
+    }
+
+  grd_dbus_remote_desktop_session_call_selection_write_done (
+    priv->remote_desktop_session, serial, TRUE, NULL, NULL, NULL);
+
+  close (fd);
+}
+
 int
 grd_session_selection_read (GrdSession  *session,
                             GrdMimeType  mime_type)
@@ -375,22 +446,26 @@ on_session_start_finished (GObject      *object,
                            GAsyncResult *result,
                            gpointer      user_data)
 {
-  GrdSession *session = user_data;
-  GrdSessionPrivate *priv = grd_session_get_instance_private (session);
-  GrdDBusRemoteDesktopSession *proxy = priv->remote_desktop_session;
-  GError *error = NULL;
+  GrdDBusRemoteDesktopSession *proxy;
+  GrdSession *session;
+  GrdSessionPrivate *priv;
+  g_autoptr (GError) error = NULL;
 
+  proxy = GRD_DBUS_REMOTE_DESKTOP_SESSION (object);
   if (!grd_dbus_remote_desktop_session_call_start_finish (proxy,
                                                           result,
                                                           &error))
     {
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        return;
+
       g_warning ("Failed to start session: %s", error->message);
-      g_error_free (error);
-
-      grd_session_stop (session);
-
+      grd_session_stop (GRD_SESSION (user_data));
       return;
     }
+
+  session = GRD_SESSION (user_data);
+  priv = grd_session_get_instance_private (session);
 
   priv->started = TRUE;
 }
@@ -412,22 +487,25 @@ on_screen_cast_stream_proxy_acquired (GObject      *object,
                                       GAsyncResult *result,
                                       gpointer      user_data)
 {
-  GrdSession *session = user_data;
-  GrdSessionPrivate *priv = grd_session_get_instance_private (session);
   GrdDBusScreenCastStream *stream_proxy;
-  GError *error = NULL;
+  GrdSession *session;
+  GrdSessionPrivate *priv;
+  g_autoptr (GError) error = NULL;
   GrdStream *stream;
 
   stream_proxy = grd_dbus_screen_cast_stream_proxy_new_finish (result, &error);
   if (!stream_proxy)
     {
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        return;
+
       g_warning ("Failed to acquire stream proxy: %s", error->message);
-      g_error_free (error);
-
-      grd_session_stop (session);
-
+      grd_session_stop (GRD_SESSION (user_data));
       return;
     }
+
+  session = GRD_SESSION (user_data);
+  priv = grd_session_get_instance_private (session);
 
   stream = grd_stream_new (priv->context, stream_proxy);
   g_signal_connect (stream, "ready", G_CALLBACK (on_stream_ready),
@@ -444,25 +522,29 @@ on_record_monitor_finished (GObject      *object,
                             GAsyncResult *result,
                             gpointer      user_data)
 {
-  GrdSession *session = user_data;
-  GrdSessionPrivate *priv = grd_session_get_instance_private (session);
-  GrdDBusScreenCastSession *proxy = priv->screen_cast_session;
-  g_autofree char *stream_path = NULL;
-  GError *error = NULL;
+  GrdDBusScreenCastSession *proxy;
+  GrdSession *session;
+  GrdSessionPrivate *priv;
   GDBusConnection *connection;
+  g_autofree char *stream_path = NULL;
+  g_autoptr (GError) error = NULL;
 
+  proxy = GRD_DBUS_SCREEN_CAST_SESSION (object);
   if (!grd_dbus_screen_cast_session_call_record_monitor_finish (proxy,
                                                                 &stream_path,
                                                                 result,
                                                                 &error))
     {
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        return;
+
       g_warning ("Failed to record monitor: %s", error->message);
-      g_error_free (error);
-
-      grd_session_stop (session);
-
+      grd_session_stop (GRD_SESSION (user_data));
       return;
     }
+
+  session = GRD_SESSION (user_data);
+  priv = grd_session_get_instance_private (session);
 
   connection = g_dbus_proxy_get_connection (G_DBUS_PROXY (proxy));
   grd_dbus_screen_cast_stream_proxy_new (connection,
@@ -479,24 +561,27 @@ on_screen_cast_session_proxy_acquired (GObject      *object,
                                        GAsyncResult *result,
                                        gpointer      user_data)
 {
-  GrdSession *session = user_data;
-  GrdSessionPrivate *priv = grd_session_get_instance_private (session);
   GrdDBusScreenCastSession *session_proxy;
+  GrdSession *session;
+  GrdSessionPrivate *priv;
   GVariantBuilder properties_builder;
-  GError *error = NULL;
+  g_autoptr (GError) error = NULL;
 
   session_proxy =
     grd_dbus_screen_cast_session_proxy_new_finish (result, &error);
   if (!session_proxy)
     {
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        return;
+
       g_warning ("Failed to acquire screen cast session proxy: %s\n",
                  error->message);
-      g_error_free (error);
-
-      grd_session_stop (session);
-
+      grd_session_stop (GRD_SESSION (user_data));
       return;
     }
+
+  session = GRD_SESSION (user_data);
+  priv = grd_session_get_instance_private (session);
 
   priv->screen_cast_session = session_proxy;
 
@@ -519,28 +604,31 @@ on_screen_cast_session_created (GObject      *source_object,
                                 GAsyncResult *res,
                                 gpointer      user_data)
 {
-  GrdSession *session = user_data;
-  GrdSessionPrivate *priv = grd_session_get_instance_private (session);
   GrdDBusScreenCast *screen_cast_proxy;
-  g_autofree char *session_path = NULL;
-  GError *error = NULL;
+  GrdSession *session;
+  GrdSessionPrivate *priv;
   GDBusConnection *connection;
+  g_autofree char *session_path = NULL;
+  g_autoptr (GError) error = NULL;
 
-  screen_cast_proxy = grd_context_get_screen_cast_proxy (priv->context);
+  screen_cast_proxy = GRD_DBUS_SCREEN_CAST (source_object);
   if (!grd_dbus_screen_cast_call_create_session_finish (screen_cast_proxy,
                                                         &session_path,
                                                         res,
                                                         &error))
     {
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        return;
+
       g_warning ("Failed to start screen cast session: %s\n", error->message);
-      g_error_free (error);
-
-      grd_session_stop (session);
-
+      grd_session_stop (GRD_SESSION (user_data));
       return;
     }
 
+  session = GRD_SESSION (user_data);
+  priv = grd_session_get_instance_private (session);
   connection = g_dbus_proxy_get_connection (G_DBUS_PROXY (screen_cast_proxy));
+
   grd_dbus_screen_cast_session_proxy_new (connection,
                                           G_DBUS_PROXY_FLAGS_NONE,
                                           MUTTER_SCREEN_CAST_BUS_NAME,
@@ -573,6 +661,9 @@ on_remote_desktop_session_selection_owner_changed (GrdDBusRemoteDesktopSession *
   const char *mime_string;
   GrdMimeType mime_type;
   GList *mime_type_list = NULL;
+
+  if (!priv->clipboard)
+    return;
 
   is_owner_variant = g_variant_lookup_value (options_variant, "session-is-owner",
                                              G_VARIANT_TYPE ("b"));
@@ -613,14 +704,10 @@ on_remote_desktop_session_selection_transfer (GrdDBusRemoteDesktopSession *sessi
                                               GrdSession                  *session)
 {
   GrdSessionPrivate *priv = grd_session_get_instance_private (session);
-  uint8_t *data;
-  uint32_t size;
-  g_autoptr (GError) error = NULL;
-  g_autoptr (GVariant) fd_variant = NULL;
-  g_autoptr (GUnixFDList) fd_list = NULL;
-  int fd_idx;
-  int fd;
   GrdMimeType mime_type;
+
+  if (!priv->clipboard)
+    return;
 
   mime_type = grd_mime_type_from_string (mime_type_string);
   if (mime_type == GRD_MIME_TYPE_NONE)
@@ -630,39 +717,8 @@ on_remote_desktop_session_selection_transfer (GrdDBusRemoteDesktopSession *sessi
       return;
     }
 
-  if (!grd_dbus_remote_desktop_session_call_selection_write_sync (
-         priv->remote_desktop_session, serial, NULL, &fd_variant, &fd_list,
-         NULL, &error))
-    {
-      g_warning ("Failed to write selection: %s", error->message);
-      return;
-    }
-
-  g_variant_get (fd_variant, "h", &fd_idx);
-  fd = acquire_fd_from_list (fd_list, fd_idx, &error);
-  if (fd == -1)
-    {
-      g_warning ("Failed to acquire file descriptor: %s", error->message);
-      return;
-    }
-
-  data = grd_clipboard_request_client_content_for_mime_type (priv->clipboard,
-                                                             mime_type, &size);
-  if (!size || write (fd, data, size) < 0)
-    {
-      grd_dbus_remote_desktop_session_call_selection_write_done (
-        priv->remote_desktop_session, serial, FALSE, NULL, NULL, NULL);
-
-      close (fd);
-      g_free (data);
-      return;
-    }
-
-  grd_dbus_remote_desktop_session_call_selection_write_done (
-    priv->remote_desktop_session, serial, TRUE, NULL, NULL, NULL);
-
-  close (fd);
-  g_free (data);
+  grd_clipboard_request_client_content_for_mime_type (priv->clipboard,
+                                                      mime_type, serial);
 }
 
 static void
@@ -700,11 +756,11 @@ on_remote_desktop_session_proxy_acquired (GObject      *object,
                                           GAsyncResult *result,
                                           gpointer      user_data)
 {
-  GrdSession *session = user_data;
-  GrdSessionPrivate *priv = grd_session_get_instance_private (session);
-  GrdSessionClass *klass = GRD_SESSION_GET_CLASS (session);
   GrdDBusRemoteDesktopSession *session_proxy;
-  GError *error = NULL;
+  GrdSession *session;
+  GrdSessionPrivate *priv;
+  GrdSessionClass *klass;
+  g_autoptr (GError) error = NULL;
   const char *remote_desktop_session_id;
   GrdDBusScreenCast *screen_cast_proxy;
   GVariantBuilder properties_builder;
@@ -714,14 +770,18 @@ on_remote_desktop_session_proxy_acquired (GObject      *object,
     grd_dbus_remote_desktop_session_proxy_new_finish (result, &error);
   if (!session_proxy)
     {
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        return;
+
       g_warning ("Failed to acquire remote desktop session proxy: %s\n",
                  error->message);
-      g_error_free (error);
-
-      grd_session_stop (session);
-
+      grd_session_stop (GRD_SESSION (user_data));
       return;
     }
+
+  session = GRD_SESSION (user_data);
+  priv = grd_session_get_instance_private (session);
+  klass = GRD_SESSION_GET_CLASS (session);
 
   g_signal_connect (session_proxy, "closed",
                     G_CALLBACK (on_remote_desktop_session_closed),
@@ -754,12 +814,14 @@ on_remote_desktop_session_proxy_acquired (GObject      *object,
                                             on_screen_cast_session_created,
                                             session);
 
-  g_signal_connect (session_proxy, "notify::caps-lock-state",
-                    G_CALLBACK (on_caps_lock_state_changed),
-                    session);
-  g_signal_connect (session_proxy, "notify::num-lock-state",
-                    G_CALLBACK (on_num_lock_state_changed),
-                    session);
+  priv->caps_lock_state_changed_id =
+    g_signal_connect (session_proxy, "notify::caps-lock-state",
+                      G_CALLBACK (on_caps_lock_state_changed),
+                      session);
+  priv->num_lock_state_changed_id =
+    g_signal_connect (session_proxy, "notify::num-lock-state",
+                      G_CALLBACK (on_num_lock_state_changed),
+                      session);
 
   if (klass->remote_desktop_session_ready)
     klass->remote_desktop_session_ready (session);
@@ -773,28 +835,31 @@ on_remote_desktop_session_created (GObject      *source_object,
                                    GAsyncResult *res,
                                    gpointer      user_data)
 {
-  GrdSession *session = user_data;
-  GrdSessionPrivate *priv = grd_session_get_instance_private (session);
   GrdDBusRemoteDesktop *remote_desktop_proxy;
-  g_autofree char *session_path = NULL;
+  GrdSession *session;
+  GrdSessionPrivate *priv;
   GDBusConnection *connection;
-  GError *error = NULL;
+  g_autofree char *session_path = NULL;
+  g_autoptr (GError) error = NULL;
 
-  remote_desktop_proxy = grd_context_get_remote_desktop_proxy (priv->context);
+  remote_desktop_proxy = GRD_DBUS_REMOTE_DESKTOP (source_object);
   if (!grd_dbus_remote_desktop_call_create_session_finish (remote_desktop_proxy,
                                                            &session_path,
                                                            res,
                                                            &error))
     {
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        return;
+
       g_warning ("Failed to start remote desktop session: %s\n", error->message);
-      g_error_free (error);
-
-      grd_session_stop (session);
-
+      grd_session_stop (GRD_SESSION (user_data));
       return;
     }
 
+  session = GRD_SESSION (user_data);
+  priv = grd_session_get_instance_private (session);
   connection = g_dbus_proxy_get_connection (G_DBUS_PROXY (remote_desktop_proxy));
+
   grd_dbus_remote_desktop_session_proxy_new (connection,
                                              G_DBUS_PROXY_FLAGS_NONE,
                                              MUTTER_REMOTE_DESKTOP_BUS_NAME,
@@ -839,7 +904,7 @@ grd_session_finalize (GObject *object)
   g_assert (!priv->remote_desktop_session);
 
   if (priv->cancellable)
-    g_cancellable_cancel (priv->cancellable);
+    g_assert (g_cancellable_is_cancelled (priv->cancellable));
   g_clear_object (&priv->cancellable);
 
   G_OBJECT_CLASS (grd_session_parent_class)->finalize (object);

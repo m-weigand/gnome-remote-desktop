@@ -138,8 +138,8 @@ grd_settings_get_rdp_username (GrdSettings  *settings,
                                GError      **error)
 {
   const char *test_password_override;
-  GVariant *credentials;
-  char *credentials_string;
+  g_autofree char *credentials_string = NULL;
+  g_autoptr (GVariant) credentials = NULL;
   char *username = NULL;
 
   test_password_override = g_getenv ("GNOME_REMOTE_DESKTOP_TEST_RDP_PASSWORD");
@@ -158,9 +158,12 @@ grd_settings_get_rdp_username (GrdSettings  *settings,
 
   credentials = g_variant_parse (NULL, credentials_string, NULL, NULL, NULL);
   g_variant_lookup (credentials, "username", "s", &username);
-
-  g_variant_unref (credentials);
-  g_free (credentials_string);
+  if (!username)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                   "Username not set");
+      return NULL;
+    }
 
   return username;
 }
@@ -170,8 +173,8 @@ grd_settings_get_rdp_password (GrdSettings  *settings,
                                GError      **error)
 {
   const char *test_password_override;
-  GVariant *credentials;
-  char *credentials_string;
+  g_autofree char *credentials_string = NULL;
+  g_autoptr (GVariant) credentials = NULL;
   char *password = NULL;
 
   test_password_override = g_getenv ("GNOME_REMOTE_DESKTOP_TEST_RDP_PASSWORD");
@@ -190,9 +193,12 @@ grd_settings_get_rdp_password (GrdSettings  *settings,
 
   credentials = g_variant_parse (NULL, credentials_string, NULL, NULL, NULL);
   g_variant_lookup (credentials, "password", "s", &password);
-
-  g_variant_unref (credentials);
-  g_free (credentials_string);
+  if (!password)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                   "Password not set");
+      return NULL;
+    }
 
   return password;
 }
@@ -245,6 +251,7 @@ grd_settings_get_vnc_auth_method (GrdSettings *settings)
 static void
 update_rdp_tls_cert (GrdSettings *settings)
 {
+  g_clear_pointer (&settings->rdp.server_cert, g_free);
   settings->rdp.server_cert = g_settings_get_string (settings->rdp.settings,
                                                      "tls-cert");
 }
@@ -252,6 +259,7 @@ update_rdp_tls_cert (GrdSettings *settings)
 static void
 update_rdp_tls_key (GrdSettings *settings)
 {
+  g_clear_pointer (&settings->rdp.server_key, g_free);
   settings->rdp.server_key = g_settings_get_string (settings->rdp.settings,
                                                     "tls-key");
 }
@@ -320,6 +328,9 @@ static void
 grd_settings_finalize (GObject *object)
 {
   GrdSettings *settings = GRD_SETTINGS (object);
+
+  g_clear_pointer (&settings->rdp.server_cert, g_free);
+  g_clear_pointer (&settings->rdp.server_key, g_free);
 
   g_clear_object (&settings->rdp.settings);
   g_clear_object (&settings->vnc.settings);
