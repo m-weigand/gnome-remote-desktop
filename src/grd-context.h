@@ -37,7 +37,7 @@ typedef enum _GrdDebugFlags
 } GrdDebugFlags;
 
 #define GRD_TYPE_CONTEXT (grd_context_get_type ())
-G_DECLARE_FINAL_TYPE (GrdContext, grd_context, GRD, CONTEXT, GObject);
+G_DECLARE_FINAL_TYPE (GrdContext, grd_context, GRD, CONTEXT, GObject)
 
 GrdDBusRemoteDesktop * grd_context_get_remote_desktop_proxy (GrdContext *context);
 
@@ -59,6 +59,8 @@ void grd_context_add_session (GrdContext *context,
 GList * grd_context_get_sessions (GrdContext *context);
 
 GrdSettings * grd_context_get_settings (GrdContext *context);
+
+GrdEglThread * grd_context_get_egl_thread (GrdContext *context);
 
 GrdDebugFlags grd_context_get_debug_flags (GrdContext *context);
 

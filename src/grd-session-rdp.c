@@ -42,9 +42,9 @@
 #include "grd-settings.h"
 #include "grd-stream.h"
 
-#ifdef HAVE_NVENC
-#include "grd-rdp-nvenc.h"
-#endif /* HAVE_NVENC */
+#ifdef HAVE_HWACCEL_NVIDIA
+#include "grd-hwaccel-nvidia.h"
+#endif /* HAVE_HWACCEL_NVIDIA */
 
 #define DISCRETE_SCROLL_STEP 10.0
 
@@ -148,9 +148,9 @@ struct _GrdSessionRdp
   NSCThreadPoolContext nsc_thread_pool_context;
   RawThreadPoolContext raw_thread_pool_context;
 
-#ifdef HAVE_NVENC
-  GrdRdpNvenc *rdp_nvenc;
-#endif /* HAVE_NVENC */
+#ifdef HAVE_HWACCEL_NVIDIA
+  GrdHwAccelNvidia *hwaccel_nvidia;
+#endif /* HAVE_HWACCEL_NVIDIA */
 
   GSource *pending_encode_source;
 
@@ -158,9 +158,10 @@ struct _GrdSessionRdp
   unsigned int close_session_idle_id;
 
   GrdRdpPipeWireStream *pipewire_stream;
+  GrdStream *stream;
 };
 
-G_DEFINE_TYPE (GrdSessionRdp, grd_session_rdp, GRD_TYPE_SESSION);
+G_DEFINE_TYPE (GrdSessionRdp, grd_session_rdp, GRD_TYPE_SESSION)
 
 static gboolean
 close_session_idle (gpointer user_data);
@@ -1278,8 +1279,10 @@ rdp_input_mouse_event (rdpInput *rdp_input,
 
   if (flags & PTR_FLAGS_MOVE)
     {
+      GrdStream *stream = session_rdp->stream;
+
       grd_rdp_event_queue_add_input_event_pointer_motion_abs (rdp_event_queue,
-                                                              x, y);
+                                                              stream, x, y);
     }
 
   button_state = flags & PTR_FLAGS_DOWN ? GRD_BUTTON_STATE_PRESSED
@@ -1651,10 +1654,10 @@ rdp_peer_post_connect (freerdp_peer *peer)
                                        rdp_peer_context->network_autodetection,
                                        rdp_peer_context->encode_stream,
                                        rdp_peer_context->rfx_context);
-#ifdef HAVE_NVENC
-      grd_rdp_graphics_pipeline_set_nvenc (rdp_peer_context->graphics_pipeline,
-                                           session_rdp->rdp_nvenc);
-#endif /* HAVE_NVENC */
+#ifdef HAVE_HWACCEL_NVIDIA
+      grd_rdp_graphics_pipeline_set_hwaccel_nvidia (
+        rdp_peer_context->graphics_pipeline, session_rdp->hwaccel_nvidia);
+#endif /* HAVE_HWACCEL_NVIDIA */
     }
 
   grd_session_start (GRD_SESSION (session_rdp));
@@ -1924,18 +1927,18 @@ graphics_thread_func (gpointer data)
 {
   GrdSessionRdp *session_rdp = data;
 
-#ifdef HAVE_NVENC
-  if (session_rdp->rdp_nvenc)
-    grd_rdp_nvenc_push_cuda_context (session_rdp->rdp_nvenc);
-#endif /* HAVE_NVENC */
+#ifdef HAVE_HWACCEL_NVIDIA
+  if (session_rdp->hwaccel_nvidia)
+    grd_hwaccel_nvidia_push_cuda_context (session_rdp->hwaccel_nvidia);
+#endif /* HAVE_HWACCEL_NVIDIA */
 
   while (WaitForSingleObject (session_rdp->stop_event, 0) == WAIT_TIMEOUT)
     g_main_context_iteration (session_rdp->graphics_context, TRUE);
 
-#ifdef HAVE_NVENC
-  if (session_rdp->rdp_nvenc)
-    grd_rdp_nvenc_pop_cuda_context (session_rdp->rdp_nvenc);
-#endif /* HAVE_NVENC */
+#ifdef HAVE_HWACCEL_NVIDIA
+  if (session_rdp->hwaccel_nvidia)
+    grd_hwaccel_nvidia_pop_cuda_context (session_rdp->hwaccel_nvidia);
+#endif /* HAVE_HWACCEL_NVIDIA */
 
   return NULL;
 }
@@ -1943,9 +1946,9 @@ graphics_thread_func (gpointer data)
 GrdSessionRdp *
 grd_session_rdp_new (GrdRdpServer      *rdp_server,
                      GSocketConnection *connection,
-#ifdef HAVE_NVENC
-                     GrdRdpNvenc       *rdp_nvenc,
-#endif /* HAVE_NVENC */
+#ifdef HAVE_HWACCEL_NVIDIA
+                     GrdHwAccelNvidia  *hwaccel_nvidia,
+#endif /* HAVE_HWACCEL_NVIDIA */
                      int                reserved)
 {
   GrdSessionRdp *session_rdp;
@@ -1976,9 +1979,9 @@ grd_session_rdp_new (GrdRdpServer      *rdp_server,
                               NULL);
 
   session_rdp->connection = g_object_ref (connection);
-#ifdef HAVE_NVENC
-  session_rdp->rdp_nvenc = rdp_nvenc;
-#endif /* HAVE_NVENC */
+#ifdef HAVE_HWACCEL_NVIDIA
+  session_rdp->hwaccel_nvidia = hwaccel_nvidia;
+#endif /* HAVE_HWACCEL_NVIDIA */
 
   session_rdp->socket_thread = g_thread_new ("RDP socket thread",
                                              socket_thread_func,
@@ -2097,15 +2100,6 @@ close_session_idle (gpointer user_data)
 }
 
 static void
-on_pipewire_stream_closed (GrdRdpPipeWireStream *stream,
-                           GrdSessionRdp        *session_rdp)
-{
-  g_warning ("PipeWire stream closed, closing client");
-
-  maybe_queue_close_session_idle (session_rdp);
-}
-
-static void
 grd_session_rdp_remote_desktop_session_ready (GrdSession *session)
 {
   GrdSessionRdp *session_rdp = GRD_SESSION_RDP (session);
@@ -2115,6 +2109,21 @@ grd_session_rdp_remote_desktop_session_ready (GrdSession *session)
   rdp_peer_context->clipboard_rdp = grd_clipboard_rdp_new (session_rdp,
                                                            rdp_peer_context->vcm,
                                                            session_rdp->stop_event);
+}
+
+static void
+grd_session_rdp_remote_desktop_session_started (GrdSession *session)
+{
+  grd_session_record_monitor (session, NULL, GRD_SCREEN_CAST_CURSOR_MODE_METADATA);
+}
+
+static void
+on_pipewire_stream_closed (GrdRdpPipeWireStream *stream,
+                           GrdSessionRdp        *session_rdp)
+{
+  g_warning ("PipeWire stream closed, closing client");
+
+  maybe_queue_close_session_idle (session_rdp);
 }
 
 static void
@@ -2140,6 +2149,7 @@ grd_session_rdp_stream_ready (GrdSession *session,
       return;
     }
 
+  session_rdp->stream = stream;
   g_signal_connect (session_rdp->pipewire_stream, "closed",
                     G_CALLBACK (on_pipewire_stream_closed),
                     session_rdp);
@@ -2294,6 +2304,8 @@ grd_session_rdp_class_init (GrdSessionRdpClass *klass)
 
   session_class->remote_desktop_session_ready =
     grd_session_rdp_remote_desktop_session_ready;
+  session_class->remote_desktop_session_started =
+    grd_session_rdp_remote_desktop_session_started;
   session_class->stop = grd_session_rdp_stop;
   session_class->stream_ready = grd_session_rdp_stream_ready;
   session_class->on_caps_lock_state_changed =

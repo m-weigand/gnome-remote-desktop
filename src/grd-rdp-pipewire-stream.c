@@ -21,6 +21,7 @@
 
 #include "grd-rdp-pipewire-stream.h"
 
+#include <drm_fourcc.h>
 #include <linux/dma-buf.h>
 #include <pipewire/pipewire.h>
 #include <spa/param/props.h>
@@ -28,8 +29,9 @@
 #include <spa/param/video/format-utils.h>
 #include <spa/utils/result.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
 
+#include "grd-context.h"
+#include "grd-egl-thread.h"
 #include "grd-pipewire-utils.h"
 
 enum
@@ -41,8 +43,17 @@ enum
 
 static guint signals[N_SIGNALS];
 
-typedef struct _GrdRdpFrame
+typedef struct _GrdRdpFrame GrdRdpFrame;
+
+typedef void (* GrdRdpFrameReadyCallback) (GrdRdpPipeWireStream *stream,
+                                           GrdRdpFrame          *frame,
+                                           gboolean              success,
+                                           gpointer              user_data);
+
+struct _GrdRdpFrame
 {
+  gatomicrefcount refcount;
+
   void *data;
   uint16_t width;
   uint16_t height;
@@ -54,7 +65,11 @@ typedef struct _GrdRdpFrame
   uint16_t pointer_width;
   uint16_t pointer_height;
   gboolean pointer_is_hidden;
-} GrdRdpFrame;
+
+  GrdRdpPipeWireStream *stream;
+  GrdRdpFrameReadyCallback callback;
+  gpointer callback_user_data;
+};
 
 struct _GrdRdpPipeWireStream
 {
@@ -78,10 +93,51 @@ struct _GrdRdpPipeWireStream
   uint32_t src_node_id;
 
   struct spa_video_info_raw spa_format;
+
+  gboolean destroyed;
 };
 
 G_DEFINE_TYPE (GrdRdpPipeWireStream, grd_rdp_pipewire_stream,
                G_TYPE_OBJECT)
+
+static void grd_rdp_frame_unref (GrdRdpFrame *frame);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (GrdRdpFrame, grd_rdp_frame_unref)
+
+static GrdRdpFrame *
+grd_rdp_frame_new (GrdRdpPipeWireStream     *stream,
+                   GrdRdpFrameReadyCallback  callback,
+                   gpointer                  callback_user_data)
+{
+  GrdRdpFrame *frame;
+
+  frame = g_new0 (GrdRdpFrame, 1);
+
+  g_atomic_ref_count_init (&frame->refcount);
+  frame->stream = stream;
+  frame->callback = callback;
+  frame->callback_user_data = callback_user_data;
+
+  return frame;
+}
+
+static GrdRdpFrame *
+grd_rdp_frame_ref (GrdRdpFrame *frame)
+{
+  g_atomic_ref_count_inc (&frame->refcount);
+  return frame;
+}
+
+static void
+grd_rdp_frame_unref (GrdRdpFrame *frame)
+{
+  if (g_atomic_ref_count_dec (&frame->refcount))
+    {
+      g_free (frame->data);
+      g_free (frame->pointer_bitmap);
+      g_free (frame);
+    }
+}
 
 static gboolean
 do_render (gpointer user_data)
@@ -98,7 +154,8 @@ do_render (gpointer user_data)
 
   if (frame->data)
     {
-      grd_session_rdp_take_buffer (stream->session_rdp, frame->data,
+      grd_session_rdp_take_buffer (stream->session_rdp,
+                                   g_steal_pointer (&frame->data),
                                    frame->width, frame->height);
     }
 
@@ -109,14 +166,14 @@ do_render (gpointer user_data)
                                       frame->pointer_hotspot_y,
                                       frame->pointer_width,
                                       frame->pointer_height,
-                                      frame->pointer_bitmap);
+                                      g_steal_pointer (&frame->pointer_bitmap));
     }
   else if (frame->pointer_is_hidden)
     {
       grd_session_rdp_hide_pointer (stream->session_rdp);
     }
 
-  g_free (frame);
+  grd_rdp_frame_unref (frame);
 
   return G_SOURCE_CONTINUE;
 }
@@ -240,8 +297,11 @@ on_stream_param_changed (void                 *user_data,
                          const struct spa_pod *format)
 {
   GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
+  GrdSession *session = GRD_SESSION (stream->session_rdp);
+  GrdContext *context = grd_session_get_context (session);
   uint8_t params_buffer[1024];
   struct spa_pod_builder pod_builder;
+  enum spa_data_type allowed_buffer_types;
   const struct spa_pod *params[3];
 
   if (!format || id != SPA_PARAM_Format)
@@ -251,10 +311,15 @@ on_stream_param_changed (void                 *user_data,
 
   pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof (params_buffer));
 
+  allowed_buffer_types = 1 << SPA_DATA_MemFd;
+  if (grd_context_get_egl_thread (context))
+    allowed_buffer_types |= 1 << SPA_DATA_DmaBuf;
+
   params[0] = spa_pod_builder_add_object (
     &pod_builder,
     SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
     SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int (8, 1, 8),
+    SPA_PARAM_BUFFERS_dataType, SPA_POD_Int (allowed_buffer_types),
     0);
 
   params[1] = spa_pod_builder_add_object (
@@ -277,93 +342,62 @@ on_stream_param_changed (void                 *user_data,
                            params, G_N_ELEMENTS (params));
 }
 
-static GrdRdpFrame *
-process_buffer (GrdRdpPipeWireStream *stream,
-                struct spa_buffer    *buffer)
+static void
+copy_frame_data (GrdRdpFrame *frame,
+                 uint8_t     *src_data,
+                 int          width,
+                 int          height,
+                 int          dst_stride,
+                 int          src_stride,
+                 int          bpp)
 {
-  size_t size;
-  uint8_t *map;
-  void *src_data;
+  int y;
+
+  frame->data = g_malloc (height * dst_stride);
+  for (y = 0; y < height; ++y)
+    {
+      memcpy (((uint8_t *) frame->data) + y * dst_stride,
+              ((uint8_t *) src_data) + y * src_stride,
+              width * 4);
+    }
+}
+
+static void
+on_dma_buf_downloaded (gboolean success,
+                       gpointer user_data)
+{
+  GrdRdpFrame *frame = user_data;
+
+  frame->callback (frame->stream,
+                   frame,
+                   success,
+                   frame->callback_user_data);
+}
+
+static void
+process_buffer (GrdRdpPipeWireStream     *stream,
+                struct spa_buffer        *buffer,
+                GrdRdpFrameReadyCallback  callback,
+                gpointer                  user_data)
+{
+  uint32_t drm_format;
+  int bpp;
+  int width;
+  int height;
+  int src_stride;
+  int dst_stride;
   struct spa_meta_cursor *spa_meta_cursor;
-  g_autofree GrdRdpFrame *frame = NULL;
+  g_autoptr (GrdRdpFrame) frame = NULL;
 
-  frame = g_new0 (GrdRdpFrame, 1);
+  height = stream->spa_format.size.height;
+  width = stream->spa_format.size.width;
+  src_stride = buffer->datas[0].chunk->stride;
+  dst_stride = grd_session_rdp_get_stride_for_width (stream->session_rdp,
+                                                     width);
+  grd_get_spa_format_details (stream->spa_format.format,
+                              &drm_format, &bpp);
 
-  if (buffer->datas[0].chunk->size == 0)
-    {
-      map = NULL;
-      src_data = NULL;
-    }
-  else if (buffer->datas[0].type == SPA_DATA_MemFd)
-    {
-      size = buffer->datas[0].maxsize + buffer->datas[0].mapoffset;
-      map = mmap (NULL, size, PROT_READ, MAP_PRIVATE, buffer->datas[0].fd, 0);
-      if (map == MAP_FAILED)
-        {
-          g_warning ("Failed to mmap buffer: %s", g_strerror (errno));
-          return NULL;
-        }
-      src_data = SPA_MEMBER (map, buffer->datas[0].mapoffset, uint8_t);
-    }
-  else if (buffer->datas[0].type == SPA_DATA_DmaBuf)
-    {
-      int fd;
-
-      fd = buffer->datas[0].fd;
-      size = buffer->datas[0].maxsize + buffer->datas[0].mapoffset;
-
-      map = mmap (NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
-      if (map == MAP_FAILED)
-        {
-          g_warning ("Failed to mmap DMA buffer: %s", g_strerror (errno));
-          return NULL;
-        }
-      grd_sync_dma_buf (fd, DMA_BUF_SYNC_START);
-
-      src_data = SPA_MEMBER (map, buffer->datas[0].mapoffset, uint8_t);
-    }
-  else if (buffer->datas[0].type == SPA_DATA_MemPtr)
-    {
-      size = buffer->datas[0].maxsize + buffer->datas[0].mapoffset;
-      map = NULL;
-      src_data = buffer->datas[0].data;
-    }
-  else
-    {
-      return NULL;
-    }
-
-  if (src_data)
-    {
-      int src_stride;
-      int dst_stride;
-      int height;
-      int width;
-      int y;
-
-      height = stream->spa_format.size.height;
-      width = stream->spa_format.size.width;
-      src_stride = buffer->datas[0].chunk->stride;
-      dst_stride = grd_session_rdp_get_stride_for_width (stream->session_rdp,
-                                                         width);
-
-      frame->data = g_malloc (height * dst_stride);
-      for (y = 0; y < height; ++y)
-        {
-          memcpy (((uint8_t *) frame->data) + y * dst_stride,
-                  ((uint8_t *) src_data) + y * src_stride,
-                  width * 4);
-        }
-      frame->width = width;
-      frame->height = height;
-    }
-
-  if (map)
-    {
-      if (buffer->datas[0].type == SPA_DATA_DmaBuf)
-        grd_sync_dma_buf (buffer->datas[0].fd, DMA_BUF_SYNC_END);
-      munmap (map, size);
-    }
+  frame = grd_rdp_frame_new (stream, callback, user_data);
 
   spa_meta_cursor = spa_buffer_find_meta_data (buffer, SPA_META_Cursor,
                                                sizeof *spa_meta_cursor);
@@ -403,7 +437,110 @@ process_buffer (GrdRdpPipeWireStream *stream,
         }
     }
 
-  return g_steal_pointer (&frame);
+  if (buffer->datas[0].chunk->size == 0)
+    {
+      callback (stream, g_steal_pointer (&frame), TRUE, user_data);
+      return;
+    }
+  else if (buffer->datas[0].type == SPA_DATA_MemFd)
+    {
+      size_t size;
+      uint8_t *map;
+      void *src_data;
+
+      size = buffer->datas[0].maxsize + buffer->datas[0].mapoffset;
+      map = mmap (NULL, size, PROT_READ, MAP_PRIVATE, buffer->datas[0].fd, 0);
+      if (map == MAP_FAILED)
+        {
+          g_warning ("Failed to mmap buffer: %s", g_strerror (errno));
+          callback (stream, g_steal_pointer (&frame), TRUE, user_data);
+          return;
+        }
+      src_data = SPA_MEMBER (map, buffer->datas[0].mapoffset, uint8_t);
+      frame->width = width;
+      frame->height = height;
+
+      copy_frame_data (frame,
+                       src_data,
+                       width, height,
+                       dst_stride,
+                       src_stride,
+                       bpp);
+
+      munmap (map, size);
+
+      callback (stream, g_steal_pointer (&frame), TRUE, user_data);
+    }
+  else if (buffer->datas[0].type == SPA_DATA_DmaBuf)
+    {
+      GrdSession *session = GRD_SESSION (stream->session_rdp);
+      GrdContext *context = grd_session_get_context (session);
+      GrdEglThread *egl_thread = grd_context_get_egl_thread (context);
+      int row_width;
+      int *fds;
+      uint32_t *offsets;
+      uint32_t *strides;
+      uint64_t *modifiers;
+      uint32_t n_planes;
+      unsigned int i;
+      uint8_t *dst_data;
+
+      frame->width = width;
+      frame->height = height;
+
+      row_width = dst_stride / bpp;
+
+      n_planes = buffer->n_datas;
+      fds = g_alloca (sizeof (int) * n_planes);
+      offsets = g_alloca (sizeof (uint32_t) * n_planes);
+      strides = g_alloca (sizeof (uint32_t) * n_planes);
+      modifiers = g_alloca (sizeof (uint64_t) * n_planes);
+
+      for (i = 0; i < n_planes; i++)
+        {
+          fds[i] = buffer->datas[i].fd;
+          offsets[i] = buffer->datas[i].chunk->offset;
+          strides[i] = buffer->datas[i].chunk->stride;
+          modifiers[i] = stream->spa_format.modifier;
+        }
+      dst_data = g_malloc0 (height * dst_stride);
+
+      frame->data = dst_data;
+      grd_egl_thread_download (egl_thread,
+                               dst_data,
+                               row_width,
+                               drm_format,
+                               width, height,
+                               n_planes,
+                               fds,
+                               strides,
+                               offsets,
+                               modifiers,
+                               on_dma_buf_downloaded,
+                               grd_rdp_frame_ref (g_steal_pointer (&frame)),
+                               (GDestroyNotify) grd_rdp_frame_unref);
+    }
+  else if (buffer->datas[0].type == SPA_DATA_MemPtr)
+    {
+      void *src_data;
+
+      src_data = buffer->datas[0].data;
+      frame->width = width;
+      frame->height = height;
+
+      copy_frame_data (frame,
+                       src_data,
+                       width, height,
+                       dst_stride,
+                       src_stride,
+                       bpp);
+
+      callback (stream, g_steal_pointer (&frame), TRUE, user_data);
+    }
+  else
+    {
+      callback (stream, g_steal_pointer (&frame), TRUE, user_data);
+    }
 }
 
 static void
@@ -431,12 +568,48 @@ take_pointer_data_from (GrdRdpFrame *src_frame,
 }
 
 static void
+on_frame_ready (GrdRdpPipeWireStream *stream,
+                GrdRdpFrame          *frame,
+                gboolean              success,
+                gpointer              user_data)
+{
+  struct pw_buffer *buffer = user_data;
+  GrdRdpFrame *pending_frame;
+
+  g_assert (frame);
+
+  if (!success)
+    goto out;
+
+  g_mutex_lock (&stream->frame_mutex);
+  pending_frame = g_steal_pointer (&stream->pending_frame);
+  if (pending_frame)
+    {
+      if (!frame->data && pending_frame->data)
+        take_frame_data_from (pending_frame, frame);
+      if (!frame->has_pointer_data && pending_frame->has_pointer_data)
+        take_pointer_data_from (pending_frame, frame);
+
+      grd_rdp_frame_unref (pending_frame);
+    }
+  stream->pending_frame = frame;
+  g_mutex_unlock (&stream->frame_mutex);
+
+out:
+  pw_stream_queue_buffer (stream->pipewire_stream, buffer);
+
+  g_source_set_ready_time (stream->render_source, 0);
+}
+
+static void
 on_stream_process (void *user_data)
 {
   GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
   struct pw_buffer *next_buffer;
   struct pw_buffer *buffer = NULL;
-  GrdRdpFrame *frame;
+
+  if (stream->destroyed)
+    return;
 
   next_buffer = pw_stream_dequeue_buffer (stream->pipewire_stream);
   while (next_buffer)
@@ -450,27 +623,7 @@ on_stream_process (void *user_data)
   if (!buffer)
     return;
 
-  frame = process_buffer (stream, buffer->buffer);
-
-  g_assert (frame);
-  g_mutex_lock (&stream->frame_mutex);
-  if (stream->pending_frame)
-    {
-      if (!frame->data && stream->pending_frame->data)
-        take_frame_data_from (stream->pending_frame, frame);
-      if (!frame->has_pointer_data && stream->pending_frame->has_pointer_data)
-        take_pointer_data_from (stream->pending_frame, frame);
-
-      g_free (stream->pending_frame->data);
-      g_free (stream->pending_frame->pointer_bitmap);
-      g_clear_pointer (&stream->pending_frame, g_free);
-    }
-  stream->pending_frame = frame;
-  g_mutex_unlock (&stream->frame_mutex);
-
-  pw_stream_queue_buffer (stream->pipewire_stream, buffer);
-
-  g_source_set_ready_time (stream->render_source, 0);
+  process_buffer (stream, buffer->buffer, on_frame_ready, buffer);
 }
 
 static const struct pw_stream_events stream_events = {
@@ -480,45 +633,120 @@ static const struct pw_stream_events stream_events = {
   .process = on_stream_process,
 };
 
-static gboolean
-connect_to_stream (GrdRdpPipeWireStream  *stream,
-                   uint32_t               refresh_rate,
-                   GError               **error)
+static void
+add_common_format_params (struct spa_pod_builder *pod_builder,
+                          enum spa_video_format   spa_format,
+                          uint32_t                refresh_rate)
 {
-  struct pw_stream *pipewire_stream;
-  uint8_t params_buffer[1024];
-  struct spa_pod_builder pod_builder;
   struct spa_rectangle min_rect;
   struct spa_rectangle max_rect;
   struct spa_fraction min_framerate;
   struct spa_fraction max_framerate;
-  const struct spa_pod *params[2];
-  int ret;
-
-  pipewire_stream = pw_stream_new (stream->pipewire_core,
-                                   "grd-rdp-pipewire-stream",
-                                   NULL);
 
   min_rect = SPA_RECTANGLE (1, 1);
   max_rect = SPA_RECTANGLE (INT32_MAX, INT32_MAX);
   min_framerate = SPA_FRACTION (1, 1);
   max_framerate = SPA_FRACTION (refresh_rate, 1);
 
+  spa_pod_builder_add (pod_builder,
+                       SPA_FORMAT_mediaType,
+                       SPA_POD_Id (SPA_MEDIA_TYPE_video), 0);
+  spa_pod_builder_add (pod_builder,
+                       SPA_FORMAT_mediaSubtype,
+                       SPA_POD_Id (SPA_MEDIA_SUBTYPE_raw), 0);
+  spa_pod_builder_add (pod_builder,
+                       SPA_FORMAT_VIDEO_format,
+                       SPA_POD_Id (spa_format), 0);
+  spa_pod_builder_add (pod_builder,
+                       SPA_FORMAT_VIDEO_size,
+                       SPA_POD_CHOICE_RANGE_Rectangle (&min_rect,
+                                                       &min_rect,
+                                                       &max_rect), 0);
+  spa_pod_builder_add (pod_builder,
+                       SPA_FORMAT_VIDEO_framerate,
+                       SPA_POD_Fraction (&SPA_FRACTION (0, 1)), 0);
+  spa_pod_builder_add (pod_builder,
+                       SPA_FORMAT_VIDEO_maxFramerate,
+                       SPA_POD_CHOICE_RANGE_Fraction (&min_framerate,
+                                                      &min_framerate,
+                                                      &max_framerate), 0);
+}
+
+static gboolean
+connect_to_stream (GrdRdpPipeWireStream  *stream,
+                   uint32_t               refresh_rate,
+                   GError               **error)
+{
+  GrdSession *session = GRD_SESSION (stream->session_rdp);
+  GrdContext *context = grd_session_get_context (session);
+  struct pw_stream *pipewire_stream;
+  uint8_t params_buffer[1024];
+  struct spa_pod_builder pod_builder;
+  const struct spa_pod *params[2];
+  struct spa_pod_frame format_frame;
+  GrdEglThread *egl_thread;
+  enum spa_video_format spa_format = SPA_VIDEO_FORMAT_BGRx;
+  gboolean need_fallback_format = FALSE;
+  int ret;
+
+  pipewire_stream = pw_stream_new (stream->pipewire_core,
+                                   "grd-rdp-pipewire-stream",
+                                   NULL);
+
   pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof (params_buffer));
-  params[0] = spa_pod_builder_add_object (
-    &pod_builder,
-    SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
-    SPA_FORMAT_mediaType, SPA_POD_Id (SPA_MEDIA_TYPE_video),
-    SPA_FORMAT_mediaSubtype, SPA_POD_Id (SPA_MEDIA_SUBTYPE_raw),
-    SPA_FORMAT_VIDEO_format, SPA_POD_Id (SPA_VIDEO_FORMAT_BGRx),
-    SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle (&min_rect,
-                                                           &min_rect,
-                                                           &max_rect),
-    SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction (&SPA_FRACTION (0, 1)),
-    SPA_FORMAT_VIDEO_maxFramerate, SPA_POD_CHOICE_RANGE_Fraction (&min_framerate,
-                                                                  &min_framerate,
-                                                                  &max_framerate),
-    0);
+
+  spa_pod_builder_push_object (&pod_builder, &format_frame,
+                               SPA_TYPE_OBJECT_Format,
+                               SPA_PARAM_EnumFormat);
+  add_common_format_params (&pod_builder, spa_format, refresh_rate);
+
+  egl_thread = grd_context_get_egl_thread (context);
+  if (egl_thread)
+    {
+      uint32_t drm_format;
+      int n_modifiers;
+      g_autofree uint64_t *modifiers = NULL;
+
+      grd_get_spa_format_details (spa_format, &drm_format, NULL);
+      if (grd_egl_thread_get_modifiers_for_format (egl_thread, drm_format,
+                                                   &n_modifiers,
+                                                   &modifiers))
+        {
+          struct spa_pod_frame modifier_frame;
+          int i;
+
+          spa_pod_builder_prop (&pod_builder,
+                                SPA_FORMAT_VIDEO_modifier,
+                                (SPA_POD_PROP_FLAG_MANDATORY |
+                                 SPA_POD_PROP_FLAG_DONT_FIXATE));
+
+          spa_pod_builder_push_choice (&pod_builder, &modifier_frame,
+                                       SPA_CHOICE_Enum, 0);
+          spa_pod_builder_long (&pod_builder, modifiers[0]);
+
+          for (i = 0; i < n_modifiers; i++)
+            {
+              uint64_t modifier = modifiers[i];
+
+              spa_pod_builder_long (&pod_builder, modifier);
+            }
+          spa_pod_builder_long (&pod_builder, DRM_FORMAT_MOD_INVALID);
+          spa_pod_builder_pop (&pod_builder, &modifier_frame);
+
+          need_fallback_format = TRUE;
+        }
+    }
+
+  params[0] = spa_pod_builder_pop (&pod_builder, &format_frame);
+
+  if (need_fallback_format)
+    {
+      spa_pod_builder_push_object (&pod_builder, &format_frame,
+                                   SPA_TYPE_OBJECT_Format,
+                                   SPA_PARAM_EnumFormat);
+      add_common_format_params (&pod_builder, spa_format, refresh_rate);
+      params[1] = spa_pod_builder_pop (&pod_builder, &format_frame);
+    }
 
   stream->pipewire_stream = pipewire_stream;
 
@@ -532,7 +760,7 @@ connect_to_stream (GrdRdpPipeWireStream  *stream,
                            stream->src_node_id,
                            (PW_STREAM_FLAG_RT_PROCESS |
                             PW_STREAM_FLAG_AUTOCONNECT),
-                           params, 1);
+                           params, need_fallback_format ? 2 : 1);
   if (ret < 0)
     {
       g_set_error_literal (error, G_IO_ERROR, g_io_error_from_errno (-ret),
@@ -618,10 +846,56 @@ grd_rdp_pipewire_stream_new (GrdSessionRdp  *session_rdp,
   return g_steal_pointer (&stream);
 }
 
+typedef struct
+{
+  GMutex mutex;
+  GCond cond;
+  gboolean done;
+} SyncData;
+
+static void
+on_sync_done (gboolean success,
+              gpointer user_data)
+{
+  SyncData *sync_data = user_data;
+
+  g_mutex_lock (&sync_data->mutex);
+  sync_data->done = TRUE;
+  g_cond_signal (&sync_data->cond);
+  g_mutex_unlock (&sync_data->mutex);
+}
+
 static void
 grd_rdp_pipewire_stream_finalize (GObject *object)
 {
   GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (object);
+  GrdSession *session = GRD_SESSION (stream->session_rdp);
+  GrdContext *context = grd_session_get_context (session);
+  GrdEglThread *egl_thread;
+
+  stream->destroyed = TRUE;
+
+  if (stream->pipewire_stream)
+    pw_stream_flush (stream->pipewire_stream, false);
+
+  egl_thread = grd_context_get_egl_thread (context);
+  if (egl_thread && stream->pipewire_stream)
+    {
+      SyncData sync_data = {};
+
+      g_mutex_init (&sync_data.mutex);
+      g_cond_init (&sync_data.cond);
+
+      grd_egl_thread_sync (egl_thread, on_sync_done, &sync_data, NULL);
+
+      g_mutex_lock (&sync_data.mutex);
+      while (!sync_data.done)
+        g_cond_wait (&sync_data.cond, &sync_data.mutex);
+      g_mutex_unlock (&sync_data.mutex);
+
+      g_cond_clear (&sync_data.cond);
+      g_mutex_clear (&sync_data.mutex);
+    }
 
   /*
    * We can't clear stream->pipewire_stream before destroying it, as the data
@@ -644,12 +918,7 @@ grd_rdp_pipewire_stream_finalize (GObject *object)
       g_clear_pointer (&stream->render_source, g_source_unref);
     }
 
-  if (stream->pending_frame)
-    {
-      g_free (stream->pending_frame->data);
-      g_free (stream->pending_frame->pointer_bitmap);
-      g_clear_pointer (&stream->pending_frame, g_free);
-    }
+  g_clear_pointer (&stream->pending_frame, grd_rdp_frame_unref);
 
   g_mutex_clear (&stream->frame_mutex);
 

@@ -31,7 +31,14 @@
 #include "grd-types.h"
 
 #define GRD_TYPE_SESSION (grd_session_get_type ())
-G_DECLARE_DERIVABLE_TYPE (GrdSession, grd_session, GRD, SESSION, GObject);
+G_DECLARE_DERIVABLE_TYPE (GrdSession, grd_session, GRD, SESSION, GObject)
+
+typedef enum _GrdScreenCastCursorMode
+{
+  GRD_SCREEN_CAST_CURSOR_MODE_HIDDEN = 0,
+  GRD_SCREEN_CAST_CURSOR_MODE_EMBEDDED = 1,
+  GRD_SCREEN_CAST_CURSOR_MODE_METADATA = 2,
+} GrdScreenCastCursorMode;
 
 typedef enum _GrdKeyState
 {
@@ -64,6 +71,7 @@ struct _GrdSessionClass
   GObjectClass parent_class;
 
   void (*remote_desktop_session_ready) (GrdSession *session);
+  void (*remote_desktop_session_started) (GrdSession *session);
   void (*stream_ready) (GrdSession *session,
                         GrdStream  *stream);
   void (*stop) (GrdSession *session);
@@ -75,6 +83,14 @@ struct _GrdSessionClass
 };
 
 GrdContext *grd_session_get_context (GrdSession *session);
+
+void grd_session_record_monitor (GrdSession              *session,
+                                 const char              *connector,
+                                 GrdScreenCastCursorMode  cursor_mode);
+
+void grd_session_record_virtual (GrdSession              *session,
+                                 GrdScreenCastCursorMode  cursor_mode,
+                                 gboolean                 is_platform);
 
 void grd_session_notify_keyboard_keycode (GrdSession  *session,
                                           uint32_t     keycode,
@@ -98,6 +114,7 @@ void grd_session_notify_pointer_axis_discrete (GrdSession     *session,
                                                int             steps);
 
 void grd_session_notify_pointer_motion_absolute (GrdSession *session,
+                                                 GrdStream  *stream,
                                                  double      x,
                                                  double      y);
 

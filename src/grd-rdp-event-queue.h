@@ -28,7 +28,7 @@
 
 #define GRD_TYPE_RDP_EVENT_QUEUE (grd_rdp_event_queue_get_type ())
 G_DECLARE_FINAL_TYPE (GrdRdpEventQueue, grd_rdp_event_queue,
-                      GRD, RDP_EVENT_QUEUE, GObject);
+                      GRD, RDP_EVENT_QUEUE, GObject)
 
 GrdRdpEventQueue *grd_rdp_event_queue_new (GrdSessionRdp *session_rdp);
 
@@ -41,6 +41,7 @@ void grd_rdp_event_queue_add_input_event_keyboard_keysym (GrdRdpEventQueue *rdp_
                                                           GrdKeyState       state);
 
 void grd_rdp_event_queue_add_input_event_pointer_motion_abs (GrdRdpEventQueue *rdp_event_queue,
+                                                             GrdStream        *stream,
                                                              double            x,
                                                              double            y);
 

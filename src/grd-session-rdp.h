@@ -30,13 +30,13 @@
 G_DECLARE_FINAL_TYPE (GrdSessionRdp,
                       grd_session_rdp,
                       GRD, SESSION_RDP,
-                      GrdSession);
+                      GrdSession)
 
 GrdSessionRdp *grd_session_rdp_new (GrdRdpServer      *rdp_server,
                                     GSocketConnection *connection,
-#ifdef HAVE_NVENC
-                                    GrdRdpNvenc       *rdp_nvenc,
-#endif /* HAVE_NVENC */
+#ifdef HAVE_HWACCEL_NVIDIA
+                                    GrdHwAccelNvidia  *hwaccel_nvidia,
+#endif /* HAVE_HWACCEL_NVIDIA */
                                     int                reserved);
 
 void grd_session_rdp_notify_error (GrdSessionRdp *session_rdp,
