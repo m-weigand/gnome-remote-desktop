@@ -1,3 +1,5 @@
+src_includepath = include_directories('.')
+
 deps = [
   cairo_dep,
   glib_dep,
@@ -6,6 +8,8 @@ deps = [
   pipewire_dep,
   libsecret_dep,
   libnotify_dep,
+  epoxy_dep,
+  drm_dep,
 ]
 
 daemon_sources = files([
@@ -13,6 +17,8 @@ daemon_sources = files([
   'grd-clipboard.h',
   'grd-context.c',
   'grd-context.h',
+  'grd-egl-thread.c',
+  'grd-egl-thread.h',
   'grd-daemon.c',
   'grd-daemon.h',
   'grd-damage-utils.c',
@@ -31,6 +37,8 @@ daemon_sources = files([
   'grd-stream.c',
   'grd-stream.h',
   'grd-types.h',
+  'grd-utils.c',
+  'grd-utils.h',
 ])
 
 if have_rdp
@@ -72,15 +80,15 @@ if have_rdp
     xkbcommon_dep,
   ]
 
-  if have_nvenc
+  if have_hwaccel_nvidia
     daemon_sources += files([
-      'grd-rdp-nvenc.c',
-      'grd-rdp-nvenc.h',
+      'grd-hwaccel-nvidia.c',
+      'grd-hwaccel-nvidia.h',
     ])
 
     deps += [
+      cuda_dep,
       dl_dep,
-      nvenc_dep,
     ]
   endif
 endif

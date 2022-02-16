@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Red Hat Inc.
+ * Copyright (C) 2022 Pascal Nowack
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -15,29 +15,29 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
  * 02111-1307, USA.
- *
- * Written by:
- *     Jonas Ådahl <jadahl@gmail.com>
  */
 
-#ifndef GRD_VNC_SERVER_H
-#define GRD_VNC_SERVER_H
+#ifndef GRD_UTILS_H
+#define GRD_UTILS_H
 
 #include <gio/gio.h>
-#include <glib-object.h>
 
-#include "grd-types.h"
+typedef struct _GrdSyncPoint
+{
+  GCond sync_cond;
+  GMutex sync_mutex;
+  gboolean completed;
 
-#define GRD_TYPE_VNC_SERVER (grd_vnc_server_get_type ())
-G_DECLARE_FINAL_TYPE (GrdVncServer,
-                      grd_vnc_server,
-                      GRD, VNC_SERVER,
-                      GSocketService)
+  gboolean success;
+} GrdSyncPoint;
 
-GrdContext *grd_vnc_server_get_context (GrdVncServer *vnc_server);
+void grd_sync_point_init (GrdSyncPoint *sync_point);
 
-gboolean grd_vnc_server_start (GrdVncServer *vnc_server, GError **error);
+void grd_sync_point_clear (GrdSyncPoint *sync_point);
 
-GrdVncServer *grd_vnc_server_new (GrdContext *context);
+void grd_sync_point_complete (GrdSyncPoint *sync_point,
+                              gboolean      success);
 
-#endif /* GRD_VNC_SERVER_H */
+gboolean grd_sync_point_wait_for_completion (GrdSyncPoint *sync_point);
+
+#endif /* GRD_UTILS_H */

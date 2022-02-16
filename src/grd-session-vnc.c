@@ -62,6 +62,7 @@ struct _GrdSessionVnc
   GCancellable *prompt_cancellable;
 
   GrdVncPipeWireStream *pipewire_stream;
+  GrdStream *stream;
 
   int prev_x;
   int prev_y;
@@ -71,7 +72,7 @@ struct _GrdSessionVnc
   GrdClipboardVnc *clipboard_vnc;
 };
 
-G_DEFINE_TYPE (GrdSessionVnc, grd_session_vnc, GRD_TYPE_SESSION);
+G_DEFINE_TYPE (GrdSessionVnc, grd_session_vnc, GRD_TYPE_SESSION)
 
 static void
 grd_session_vnc_detach_source (GrdSessionVnc *session_vnc);
@@ -444,7 +445,9 @@ handle_pointer_event (int          button_mask,
 
   if (x != session_vnc->prev_x || y != session_vnc->prev_y)
     {
-      grd_session_notify_pointer_motion_absolute (session, x, y);
+      GrdStream *stream = session_vnc->stream;
+
+      grd_session_notify_pointer_motion_absolute (session, stream, x, y);
 
       session_vnc->prev_x = x;
       session_vnc->prev_y = y;
@@ -719,6 +722,12 @@ close_session_idle (gpointer user_data)
 }
 
 static void
+grd_session_vnc_remote_desktop_session_started (GrdSession *session)
+{
+  grd_session_record_monitor (session, NULL, GRD_SCREEN_CAST_CURSOR_MODE_METADATA);
+}
+
+static void
 on_pipewire_stream_closed (GrdVncPipeWireStream *stream,
                            GrdSessionVnc        *session_vnc)
 {
@@ -745,6 +754,7 @@ grd_session_vnc_stream_ready (GrdSession *session,
       return;
     }
 
+  session_vnc->stream = stream;
   g_signal_connect (session_vnc->pipewire_stream, "closed",
                     G_CALLBACK (on_pipewire_stream_closed),
                     session_vnc);
@@ -768,5 +778,7 @@ grd_session_vnc_class_init (GrdSessionVncClass *klass)
   object_class->dispose = grd_session_vnc_dispose;
 
   session_class->stop = grd_session_vnc_stop;
+  session_class->remote_desktop_session_started =
+    grd_session_vnc_remote_desktop_session_started;
   session_class->stream_ready = grd_session_vnc_stream_ready;
 }

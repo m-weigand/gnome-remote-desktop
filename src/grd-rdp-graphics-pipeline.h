@@ -28,7 +28,7 @@
 
 #define GRD_TYPE_RDP_GRAPHICS_PIPELINE (grd_rdp_graphics_pipeline_get_type ())
 G_DECLARE_FINAL_TYPE (GrdRdpGraphicsPipeline, grd_rdp_graphics_pipeline,
-                      GRD, RDP_GRAPHICS_PIPELINE, GObject);
+                      GRD, RDP_GRAPHICS_PIPELINE, GObject)
 
 GrdRdpGraphicsPipeline *grd_rdp_graphics_pipeline_new (GrdSessionRdp              *session_rdp,
                                                        GMainContext               *pipeline_context,
@@ -41,10 +41,10 @@ GrdRdpGraphicsPipeline *grd_rdp_graphics_pipeline_new (GrdSessionRdp            
 
 void grd_rdp_graphics_pipeline_maybe_init (GrdRdpGraphicsPipeline *graphics_pipeline);
 
-#ifdef HAVE_NVENC
-void grd_rdp_graphics_pipeline_set_nvenc (GrdRdpGraphicsPipeline *graphics_pipeline,
-                                          GrdRdpNvenc            *rdp_nvenc);
-#endif /* HAVE_NVENC */
+#ifdef HAVE_HWACCEL_NVIDIA
+void grd_rdp_graphics_pipeline_set_hwaccel_nvidia (GrdRdpGraphicsPipeline *graphics_pipeline,
+                                                   GrdHwAccelNvidia       *hwaccel_nvidia);
+#endif /* HAVE_HWACCEL_NVIDIA */
 
 void grd_rdp_graphics_pipeline_create_surface (GrdRdpGraphicsPipeline *graphics_pipeline,
                                                GrdRdpGfxSurface       *gfx_surface);

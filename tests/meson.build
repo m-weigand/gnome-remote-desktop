@@ -20,3 +20,27 @@ if have_vnc
     timeout: 10,
   )
 endif
+
+gbm_dep = dependency('gbm')
+gudev_dep = dependency('gudev-1.0')
+
+egl_thread_test = executable(
+  'egl-thread-test',
+  sources: [
+    'egl-thread-test.c',
+    '../src/grd-egl-thread.c',
+    '../src/grd-egl-thread.h',
+  ],
+  dependencies: [
+    deps,
+    drm_dep,
+    gbm_dep,
+    gudev_dep,
+  ],
+  include_directories: [
+    src_includepath,
+    configinc,
+  ],
+)
+
+test('egl-thread', egl_thread_test)

@@ -28,8 +28,11 @@
 #include <winpr/ssl.h>
 
 #include "grd-context.h"
-#include "grd-rdp-nvenc.h"
 #include "grd-session-rdp.h"
+
+#ifdef HAVE_HWACCEL_NVIDIA
+#include "grd-hwaccel-nvidia.h"
+#endif /* HAVE_HWACCEL_NVIDIA */
 
 enum
 {
@@ -48,12 +51,12 @@ struct _GrdRdpServer
   guint idle_task;
 
   GrdContext *context;
-#ifdef HAVE_NVENC
-  GrdRdpNvenc *rdp_nvenc;
-#endif /* HAVE_NVENC */
+#ifdef HAVE_HWACCEL_NVIDIA
+  GrdHwAccelNvidia *hwaccel_nvidia;
+#endif /* HAVE_HWACCEL_NVIDIA */
 };
 
-G_DEFINE_TYPE (GrdRdpServer, grd_rdp_server, G_TYPE_SOCKET_SERVICE);
+G_DEFINE_TYPE (GrdRdpServer, grd_rdp_server, G_TYPE_SOCKET_SERVICE)
 
 GrdContext *
 grd_rdp_server_get_context (GrdRdpServer *rdp_server)
@@ -65,10 +68,30 @@ GrdRdpServer *
 grd_rdp_server_new (GrdContext *context)
 {
   GrdRdpServer *rdp_server;
+#ifdef HAVE_HWACCEL_NVIDIA
+  GrdEglThread *egl_thread;
+#endif /* HAVE_HWACCEL_NVIDIA */
 
   rdp_server = g_object_new (GRD_TYPE_RDP_SERVER,
                              "context", context,
                              NULL);
+
+#ifdef HAVE_HWACCEL_NVIDIA
+  egl_thread = grd_context_get_egl_thread (rdp_server->context);
+  if (egl_thread &&
+      (rdp_server->hwaccel_nvidia = grd_hwaccel_nvidia_new (egl_thread)))
+    {
+      g_message ("[RDP] Initialization of CUDA was successful");
+    }
+  else
+    {
+      g_debug ("[RDP] Initialization of CUDA failed. "
+               "No hardware acceleration available");
+    }
+#else
+  g_message ("[RDP] RDP backend is built WITHOUT support for NVENC and CUDA. "
+             "No hardware acceleration available");
+#endif /* HAVE_HWACCEL_NVIDIA */
 
   return rdp_server;
 }
@@ -116,9 +139,9 @@ on_incoming (GSocketService    *service,
   g_debug ("New incoming RDP connection");
 
   if (!(session_rdp = grd_session_rdp_new (rdp_server, connection,
-#ifdef HAVE_NVENC
-                                           rdp_server->rdp_nvenc,
-#endif /* HAVE_NVENC */
+#ifdef HAVE_HWACCEL_NVIDIA
+                                           rdp_server->hwaccel_nvidia,
+#endif /* HAVE_HWACCEL_NVIDIA */
                                            0)))
     return TRUE;
 
@@ -198,9 +221,9 @@ grd_rdp_server_dispose (GObject *object)
 {
   GrdRdpServer *rdp_server = GRD_RDP_SERVER (object);
 
-#ifdef HAVE_NVENC
-  g_clear_object (&rdp_server->rdp_nvenc);
-#endif /* HAVE_NVENC */
+#ifdef HAVE_HWACCEL_NVIDIA
+  g_clear_object (&rdp_server->hwaccel_nvidia);
+#endif /* HAVE_HWACCEL_NVIDIA */
 
   if (rdp_server->idle_task)
     {
@@ -238,22 +261,6 @@ grd_rdp_server_init (GrdRdpServer *rdp_server)
    * Run the primitives benchmark here to save time, when initializing a session
    */
   primitives_get ();
-
-#ifdef HAVE_NVENC
-  rdp_server->rdp_nvenc = grd_rdp_nvenc_new ();
-  if (rdp_server->rdp_nvenc)
-    {
-      g_debug ("[RDP] Initialization of NVENC was successful");
-    }
-  else
-    {
-      g_message ("[RDP] Initialization of NVENC failed. "
-                 "No hardware acceleration available");
-    }
-#else
-  g_message ("[RDP] RDP backend is built WITHOUT support for NVENC and CUDA. "
-             "No hardware acceleration available");
-#endif /* HAVE_NVENC */
 }
 
 static void
