@@ -1,3 +1,9 @@
+gnome-remote-desktop (42~beta-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bicha <jeremy.bicha@canonical.com>  Wed, 16 Feb 2022 08:32:28 -0500
+
 gnome-remote-desktop (41.2-1) unstable; urgency=medium
 
   * New upstream release
