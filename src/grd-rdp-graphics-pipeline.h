@@ -20,7 +20,6 @@
 #ifndef GRD_RDP_GRAPHICS_PIPELINE_H
 #define GRD_RDP_GRAPHICS_PIPELINE_H
 
-#include <cairo/cairo.h>
 #include <freerdp/server/rdpgfx.h>
 #include <glib-object.h>
 
@@ -41,10 +40,8 @@ GrdRdpGraphicsPipeline *grd_rdp_graphics_pipeline_new (GrdSessionRdp            
 
 void grd_rdp_graphics_pipeline_maybe_init (GrdRdpGraphicsPipeline *graphics_pipeline);
 
-#ifdef HAVE_HWACCEL_NVIDIA
 void grd_rdp_graphics_pipeline_set_hwaccel_nvidia (GrdRdpGraphicsPipeline *graphics_pipeline,
                                                    GrdHwAccelNvidia       *hwaccel_nvidia);
-#endif /* HAVE_HWACCEL_NVIDIA */
 
 void grd_rdp_graphics_pipeline_create_surface (GrdRdpGraphicsPipeline *graphics_pipeline,
                                                GrdRdpGfxSurface       *gfx_surface);
@@ -63,7 +60,6 @@ void grd_rdp_graphics_pipeline_notify_new_round_trip_time (GrdRdpGraphicsPipelin
 
 void grd_rdp_graphics_pipeline_refresh_gfx (GrdRdpGraphicsPipeline *graphics_pipeline,
                                             GrdRdpSurface          *rdp_surface,
-                                            cairo_region_t         *region,
-                                            uint8_t                *src_data);
+                                            GrdRdpBuffer           *buffer);
 
 #endif /* GRD_RDP_GRAPHICS_PIPELINE_H */

@@ -21,17 +21,19 @@
 
 #include "grd-rdp-graphics-pipeline.h"
 
+#include <cairo/cairo.h>
 #include <winpr/sysinfo.h>
 
+#include "grd-hwaccel-nvidia.h"
+#include "grd-rdp-buffer.h"
+#include "grd-rdp-damage-detector.h"
 #include "grd-rdp-frame-info.h"
+#include "grd-rdp-gfx-frame-controller.h"
 #include "grd-rdp-gfx-surface.h"
 #include "grd-rdp-network-autodetection.h"
 #include "grd-rdp-surface.h"
 #include "grd-session-rdp.h"
-
-#ifdef HAVE_HWACCEL_NVIDIA
-#include "grd-hwaccel-nvidia.h"
-#endif /* HAVE_HWACCEL_NVIDIA */
+#include "grd-utils.h"
 
 #define ENC_TIMES_CHECK_INTERVAL_MS 1000
 #define MAX_TRACKED_ENC_FRAMES 1000
@@ -68,6 +70,7 @@ struct _GrdRdpGraphicsPipeline
   RdpgfxServerContext *rdpgfx_context;
   HANDLE stop_event;
   gboolean channel_opened;
+  gboolean received_first_cap_sets;
   gboolean initialized;
   uint32_t initial_version;
 
@@ -99,9 +102,7 @@ struct _GrdRdpGraphicsPipeline
   GQueue *enc_times;
 
   GHashTable *surface_hwaccel_table;
-#ifdef HAVE_HWACCEL_NVIDIA
   GrdHwAccelNvidia *hwaccel_nvidia;
-#endif /* HAVE_HWACCEL_NVIDIA */
 
   uint32_t next_frame_id;
   uint16_t next_surface_id;
@@ -110,14 +111,44 @@ struct _GrdRdpGraphicsPipeline
 
 G_DEFINE_TYPE (GrdRdpGraphicsPipeline, grd_rdp_graphics_pipeline, G_TYPE_OBJECT)
 
-#ifdef HAVE_HWACCEL_NVIDIA
 void
 grd_rdp_graphics_pipeline_set_hwaccel_nvidia (GrdRdpGraphicsPipeline *graphics_pipeline,
                                               GrdHwAccelNvidia       *hwaccel_nvidia)
 {
   graphics_pipeline->hwaccel_nvidia = hwaccel_nvidia;
 }
-#endif /* HAVE_HWACCEL_NVIDIA */
+
+static uint16_t
+get_next_free_surface_id (GrdRdpGraphicsPipeline *graphics_pipeline)
+{
+  uint16_t surface_id = graphics_pipeline->next_surface_id;
+
+  g_mutex_lock (&graphics_pipeline->gfx_mutex);
+  while (g_hash_table_contains (graphics_pipeline->surface_table,
+                                GUINT_TO_POINTER (surface_id)))
+    ++surface_id;
+  g_mutex_unlock (&graphics_pipeline->gfx_mutex);
+
+  graphics_pipeline->next_surface_id = surface_id + 1;
+
+  return surface_id;
+}
+
+static uint32_t
+get_next_free_serial (GrdRdpGraphicsPipeline *graphics_pipeline)
+{
+  uint32_t serial = graphics_pipeline->next_serial;
+
+  g_mutex_lock (&graphics_pipeline->gfx_mutex);
+  while (g_hash_table_contains (graphics_pipeline->serial_surface_table,
+                                GUINT_TO_POINTER (serial)))
+    ++serial;
+  g_mutex_unlock (&graphics_pipeline->gfx_mutex);
+
+  graphics_pipeline->next_serial = serial + 1;
+
+  return serial;
+}
 
 void
 grd_rdp_graphics_pipeline_create_surface (GrdRdpGraphicsPipeline *graphics_pipeline,
@@ -128,11 +159,14 @@ grd_rdp_graphics_pipeline_create_surface (GrdRdpGraphicsPipeline *graphics_pipel
   GrdRdpSurface *rdp_surface = grd_rdp_gfx_surface_get_rdp_surface (gfx_surface);
   uint16_t surface_id = grd_rdp_gfx_surface_get_surface_id (gfx_surface);
   uint32_t surface_serial = grd_rdp_gfx_surface_get_serial (gfx_surface);
+  uint16_t surface_width = grd_rdp_gfx_surface_get_width (gfx_surface);
+  uint16_t surface_height = grd_rdp_gfx_surface_get_height (gfx_surface);
   GfxSurfaceContext *surface_context;
-#ifdef HAVE_HWACCEL_NVIDIA
+  gboolean needs_separate_render_surface = FALSE;
   HWAccelContext *hwaccel_context;
   uint32_t encode_session_id;
-#endif /* HAVE_HWACCEL_NVIDIA */
+  uint16_t aligned_width;
+  uint16_t aligned_height;
 
   surface_context = g_malloc0 (sizeof (GfxSurfaceContext));
 
@@ -144,18 +178,26 @@ grd_rdp_graphics_pipeline_create_surface (GrdRdpGraphicsPipeline *graphics_pipel
   g_hash_table_insert (graphics_pipeline->serial_surface_table,
                        GUINT_TO_POINTER (surface_serial), surface_context);
 
-#ifdef HAVE_HWACCEL_NVIDIA
-  if ((rdpgfx_context->rdpcontext->settings->GfxAVC444v2 ||
+  if (!grd_rdp_gfx_surface_disallows_hwaccel_sessions (gfx_surface) &&
+      (rdpgfx_context->rdpcontext->settings->GfxAVC444v2 ||
        rdpgfx_context->rdpcontext->settings->GfxAVC444 ||
        rdpgfx_context->rdpcontext->settings->GfxH264) &&
       graphics_pipeline->hwaccel_nvidia &&
       grd_hwaccel_nvidia_create_nvenc_session (graphics_pipeline->hwaccel_nvidia,
                                                &encode_session_id,
-                                               rdp_surface->width,
-                                               rdp_surface->height,
+                                               surface_width, surface_height,
+                                               &aligned_width, &aligned_height,
                                                rdp_surface->refresh_rate))
     {
+      uint16_t aligned_width_16;
+      uint16_t aligned_height_16;
+
       g_debug ("[RDP.RDPGFX] Creating NVENC session for surface %u", surface_id);
+
+      aligned_width_16 = grd_get_aligned_size (surface_width, 16);
+      aligned_height_16 = grd_get_aligned_size (surface_height, 16);
+      if (aligned_width != aligned_width_16 || aligned_height != aligned_height_16)
+        needs_separate_render_surface = TRUE;
 
       hwaccel_context = g_malloc0 (sizeof (HWAccelContext));
       hwaccel_context->api = HW_ACCEL_API_NVENC;
@@ -163,16 +205,40 @@ grd_rdp_graphics_pipeline_create_surface (GrdRdpGraphicsPipeline *graphics_pipel
 
       g_hash_table_insert (graphics_pipeline->surface_hwaccel_table,
                            GUINT_TO_POINTER (surface_id), hwaccel_context);
+
+      rdp_surface->needs_no_local_data = TRUE;
     }
-#endif /* HAVE_HWACCEL_NVIDIA */
   g_mutex_unlock (&graphics_pipeline->gfx_mutex);
 
   create_surface.surfaceId = surface_id;
-  create_surface.width = rdp_surface->width;
-  create_surface.height = rdp_surface->height;
+  create_surface.width = surface_width;
+  create_surface.height = surface_height;
   create_surface.pixelFormat = GFX_PIXEL_FORMAT_XRGB_8888;
 
   rdpgfx_context->CreateSurface (rdpgfx_context, &create_surface);
+
+  if (needs_separate_render_surface)
+    {
+      g_autoptr (GrdRdpGfxSurface) render_surface = NULL;
+      GrdRdpGfxSurfaceDescriptor surface_descriptor = {};
+
+      g_debug ("[RDP.RDPGFX] Creating separate render surface for surface %u",
+               surface_id);
+
+      surface_descriptor.flags = GRD_RDP_GFX_SURFACE_FLAG_ALIGNED_SIZE |
+                                 GRD_RDP_GFX_SURFACE_FLAG_NO_HWACCEL_SESSIONS;
+      surface_descriptor.surface_id = get_next_free_surface_id (graphics_pipeline);
+      surface_descriptor.serial = get_next_free_serial (graphics_pipeline);
+      surface_descriptor.rdp_surface = rdp_surface;
+
+      surface_descriptor.aligned_width = aligned_width;
+      surface_descriptor.aligned_height = aligned_height;
+
+      render_surface = grd_rdp_gfx_surface_new (graphics_pipeline,
+                                                &surface_descriptor);
+      grd_rdp_gfx_surface_override_render_surface (gfx_surface,
+                                                   g_steal_pointer (&render_surface));
+    }
 }
 
 void
@@ -182,11 +248,10 @@ grd_rdp_graphics_pipeline_delete_surface (GrdRdpGraphicsPipeline *graphics_pipel
   RdpgfxServerContext *rdpgfx_context = graphics_pipeline->rdpgfx_context;
   RDPGFX_DELETE_ENCODING_CONTEXT_PDU delete_encoding_context = {0};
   RDPGFX_DELETE_SURFACE_PDU delete_surface = {0};
+  GrdRdpSurface *rdp_surface = grd_rdp_gfx_surface_get_rdp_surface (gfx_surface);
   gboolean needs_encoding_context_deletion = FALSE;
   GfxSurfaceContext *surface_context;
-#ifdef HAVE_HWACCEL_NVIDIA
   HWAccelContext *hwaccel_context;
-#endif /* HAVE_HWACCEL_NVIDIA */
   uint16_t surface_id;
   uint32_t codec_context_id;
   uint32_t surface_serial;
@@ -211,19 +276,18 @@ grd_rdp_graphics_pipeline_delete_surface (GrdRdpGraphicsPipeline *graphics_pipel
                            GUINT_TO_POINTER (surface_serial));
     }
 
-#ifdef HAVE_HWACCEL_NVIDIA
   if (g_hash_table_steal_extended (graphics_pipeline->surface_hwaccel_table,
                                    GUINT_TO_POINTER (surface_id),
                                    NULL, (gpointer *) &hwaccel_context))
     {
       g_debug ("[RDP.RDPGFX] Destroying NVENC session for surface %u", surface_id);
+      rdp_surface->needs_no_local_data = FALSE;
 
       g_assert (hwaccel_context->api == HW_ACCEL_API_NVENC);
       grd_hwaccel_nvidia_free_nvenc_session (graphics_pipeline->hwaccel_nvidia,
                                              hwaccel_context->encode_session_id);
       g_free (hwaccel_context);
     }
-#endif /* HAVE_HWACCEL_NVIDIA */
 
   if (g_hash_table_steal_extended (graphics_pipeline->codec_context_table,
                                    GUINT_TO_POINTER (codec_context_id),
@@ -295,12 +359,20 @@ grd_rdp_graphics_pipeline_notify_new_round_trip_time (GrdRdpGraphicsPipeline *gr
                                                       uint64_t                round_trip_time_us)
 {
   GrdRdpGfxSurface *gfx_surface;
+  GrdRdpGfxFrameController *frame_controller;
   GHashTableIter iter;
 
   g_mutex_lock (&graphics_pipeline->gfx_mutex);
   g_hash_table_iter_init (&iter, graphics_pipeline->surface_table);
   while (g_hash_table_iter_next (&iter, NULL, (gpointer *) &gfx_surface))
-    grd_rdp_gfx_surface_notify_new_round_trip_time (gfx_surface, round_trip_time_us);
+    {
+      frame_controller = grd_rdp_gfx_surface_get_frame_controller (gfx_surface);
+      if (!frame_controller)
+        continue;
+
+      grd_rdp_gfx_frame_controller_notify_new_round_trip_time (frame_controller,
+                                                               round_trip_time_us);
+    }
   g_mutex_unlock (&graphics_pipeline->gfx_mutex);
 }
 
@@ -399,28 +471,62 @@ enqueue_tracked_frame_info (GrdRdpGraphicsPipeline *graphics_pipeline,
   g_queue_push_tail (graphics_pipeline->encoded_frames, gfx_frame_info);
 }
 
-#ifdef HAVE_HWACCEL_NVIDIA
+static void
+blit_surface_to_surface (GrdRdpGraphicsPipeline *graphics_pipeline,
+                         GrdRdpGfxSurface       *dst_surface,
+                         GrdRdpGfxSurface       *src_surface,
+                         RECTANGLE_16           *region_rects,
+                         int                     n_rects)
+{
+  RdpgfxServerContext *rdpgfx_context = graphics_pipeline->rdpgfx_context;
+  RDPGFX_SURFACE_TO_SURFACE_PDU surface_to_surface = {};
+  RDPGFX_POINT16 dst_point = {};
+  int i;
+
+  surface_to_surface.surfaceIdSrc =
+    grd_rdp_gfx_surface_get_surface_id (src_surface);
+  surface_to_surface.surfaceIdDest =
+    grd_rdp_gfx_surface_get_surface_id (dst_surface);
+
+  for (i = 0; i < n_rects; ++i)
+    {
+      dst_point.x = region_rects[i].left;
+      dst_point.y = region_rects[i].top;
+
+      surface_to_surface.rectSrc = region_rects[i];
+      surface_to_surface.destPts = &dst_point;
+      surface_to_surface.destPtsCount = 1;
+
+      rdpgfx_context->SurfaceToSurface (rdpgfx_context, &surface_to_surface);
+    }
+}
+
 static gboolean
 refresh_gfx_surface_avc420 (GrdRdpGraphicsPipeline *graphics_pipeline,
                             HWAccelContext         *hwaccel_context,
                             GrdRdpSurface          *rdp_surface,
-                            cairo_region_t         *region,
-                            uint8_t                *src_data,
+                            GrdRdpBuffer           *buffer,
                             int64_t                *enc_time_us)
 {
   RdpgfxServerContext *rdpgfx_context = graphics_pipeline->rdpgfx_context;
   GrdRdpGfxSurface *gfx_surface = rdp_surface->gfx_surface;
+  GrdRdpGfxSurface *render_surface =
+    grd_rdp_gfx_surface_get_render_surface (gfx_surface);
+  GrdRdpGfxFrameController *frame_controller =
+    grd_rdp_gfx_surface_get_frame_controller (gfx_surface);
   RDPGFX_SURFACE_COMMAND cmd = {0};
   RDPGFX_START_FRAME_PDU cmd_start = {0};
   RDPGFX_END_FRAME_PDU cmd_end = {0};
   RDPGFX_AVC420_BITMAP_STREAM avc420 = {0};
+  RECTANGLE_16 *region_rects;
   SYSTEMTIME system_time;
   cairo_rectangle_int_t cairo_rect, region_extents;
   int n_rects;
-  uint16_t surface_width = rdp_surface->width;
-  uint16_t surface_height = rdp_surface->height;
+  uint16_t surface_width = grd_rdp_gfx_surface_get_width (gfx_surface);
+  uint16_t surface_height = grd_rdp_gfx_surface_get_height (gfx_surface);
   uint16_t aligned_width;
   uint16_t aligned_height;
+  cairo_region_t *region;
   uint32_t surface_serial;
   int64_t enc_ack_time_us;
   int i;
@@ -433,12 +539,33 @@ refresh_gfx_surface_avc420 (GrdRdpGraphicsPipeline *graphics_pipeline,
 
   if (!grd_hwaccel_nvidia_avc420_encode_bgrx_frame (graphics_pipeline->hwaccel_nvidia,
                                                     hwaccel_context->encode_session_id,
-                                                    src_data,
+                                                    buffer->mapped_cuda_pointer,
+                                                    &rdp_surface->avc.main_view,
                                                     surface_width, surface_height,
                                                     aligned_width, aligned_height,
-                                                    &avc420.data, &avc420.length))
+                                                    rdp_surface->cuda_stream))
     {
       g_warning ("[RDP.RDPGFX] Failed to encode YUV420 frame");
+      return FALSE;
+    }
+
+  region = grd_rdp_damage_detector_get_damage_region (rdp_surface->detector);
+  if (!region)
+    {
+      grd_session_rdp_notify_error (graphics_pipeline->session_rdp,
+                                    GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
+      grd_hwaccel_nvidia_avc420_retrieve_bitstream (graphics_pipeline->hwaccel_nvidia,
+                                                    hwaccel_context->encode_session_id,
+                                                    NULL, NULL);
+      return FALSE;
+    }
+
+  if (!grd_hwaccel_nvidia_avc420_retrieve_bitstream (graphics_pipeline->hwaccel_nvidia,
+                                                     hwaccel_context->encode_session_id,
+                                                     &avc420.data, &avc420.length))
+    {
+      g_warning ("[RDP.RDPGFX] Failed to retrieve AVC420 bitstream");
+      cairo_region_destroy (region);
       return FALSE;
     }
 
@@ -452,7 +579,7 @@ refresh_gfx_surface_avc420 (GrdRdpGraphicsPipeline *graphics_pipeline,
 
   cairo_region_get_extents (region, &region_extents);
 
-  cmd.surfaceId = grd_rdp_gfx_surface_get_surface_id (gfx_surface);
+  cmd.surfaceId = grd_rdp_gfx_surface_get_surface_id (render_surface);
   cmd.codecId = RDPGFX_CODECID_AVC420;
   cmd.format = PIXEL_FORMAT_BGRX32;
   cmd.left = 0;
@@ -464,16 +591,16 @@ refresh_gfx_surface_avc420 (GrdRdpGraphicsPipeline *graphics_pipeline,
   cmd.extra = &avc420;
 
   avc420.meta.numRegionRects = n_rects = cairo_region_num_rectangles (region);
-  avc420.meta.regionRects = g_malloc0 (n_rects * sizeof (RECTANGLE_16));
+  avc420.meta.regionRects = region_rects = g_new0 (RECTANGLE_16, n_rects);
   avc420.meta.quantQualityVals = g_malloc0 (n_rects * sizeof (RDPGFX_H264_QUANT_QUALITY));
   for (i = 0; i < n_rects; ++i)
     {
       cairo_region_get_rectangle (region, i, &cairo_rect);
 
-      avc420.meta.regionRects[i].left = cairo_rect.x;
-      avc420.meta.regionRects[i].top = cairo_rect.y;
-      avc420.meta.regionRects[i].right = cairo_rect.x + cairo_rect.width;
-      avc420.meta.regionRects[i].bottom = cairo_rect.y + cairo_rect.height;
+      region_rects[i].left = cairo_rect.x;
+      region_rects[i].top = cairo_rect.y;
+      region_rects[i].right = cairo_rect.x + cairo_rect.width;
+      region_rects[i].bottom = cairo_rect.y + cairo_rect.height;
 
       avc420.meta.quantQualityVals[i].qp = 22;
       avc420.meta.quantQualityVals[i].p = hwaccel_context->has_first_frame ? 1 : 0;
@@ -483,8 +610,8 @@ refresh_gfx_surface_avc420 (GrdRdpGraphicsPipeline *graphics_pipeline,
 
   g_mutex_lock (&graphics_pipeline->gfx_mutex);
   enc_ack_time_us = g_get_monotonic_time ();
-  grd_rdp_gfx_surface_unack_frame (gfx_surface, cmd_start.frameId,
-                                   enc_ack_time_us);
+  grd_rdp_gfx_frame_controller_unack_frame (frame_controller, cmd_start.frameId,
+                                            enc_ack_time_us);
 
   surface_serial = grd_rdp_gfx_surface_get_serial (gfx_surface);
   g_hash_table_insert (graphics_pipeline->frame_serial_table,
@@ -495,25 +622,32 @@ refresh_gfx_surface_avc420 (GrdRdpGraphicsPipeline *graphics_pipeline,
 
   if (graphics_pipeline->frame_acks_suspended)
     {
-      grd_rdp_gfx_surface_ack_frame (gfx_surface, cmd_start.frameId,
-                                     enc_ack_time_us);
+      grd_rdp_gfx_frame_controller_ack_frame (frame_controller, cmd_start.frameId,
+                                              enc_ack_time_us);
       enqueue_tracked_frame_info (graphics_pipeline, surface_serial,
                                   cmd_start.frameId, enc_ack_time_us);
     }
   g_mutex_unlock (&graphics_pipeline->gfx_mutex);
 
-  rdpgfx_context->SurfaceFrameCommand (rdpgfx_context, &cmd,
-                                       &cmd_start, &cmd_end);
+  rdpgfx_context->StartFrame (rdpgfx_context, &cmd_start);
+  rdpgfx_context->SurfaceCommand (rdpgfx_context, &cmd);
+
+  if (render_surface != gfx_surface)
+    {
+      blit_surface_to_surface (graphics_pipeline, gfx_surface, render_surface,
+                               region_rects, n_rects);
+    }
+  rdpgfx_context->EndFrame (rdpgfx_context, &cmd_end);
 
   *enc_time_us = enc_ack_time_us;
 
   g_free (avc420.data);
   g_free (avc420.meta.quantQualityVals);
-  g_free (avc420.meta.regionRects);
+  g_free (region_rects);
+  cairo_region_destroy (region);
 
   return TRUE;
 }
-#endif /* HAVE_HWACCEL_NVIDIA */
 
 static gboolean
 rfx_progressive_write_message (RFX_MESSAGE *rfx_message,
@@ -649,19 +783,23 @@ rfx_progressive_write_message (RFX_MESSAGE *rfx_message,
 static gboolean
 refresh_gfx_surface_rfx_progressive (GrdRdpGraphicsPipeline *graphics_pipeline,
                                      GrdRdpSurface          *rdp_surface,
-                                     cairo_region_t         *region,
-                                     uint8_t                *src_data,
+                                     GrdRdpBuffer           *buffer,
                                      int64_t                *enc_time_us)
 {
   RdpgfxServerContext *rdpgfx_context = graphics_pipeline->rdpgfx_context;
   GrdSessionRdp *session_rdp = graphics_pipeline->session_rdp;
   GrdRdpGfxSurface *gfx_surface = rdp_surface->gfx_surface;
+  GrdRdpGfxFrameController *frame_controller =
+    grd_rdp_gfx_surface_get_frame_controller (gfx_surface);
+  uint16_t surface_width = grd_rdp_gfx_surface_get_width (gfx_surface);
+  uint16_t surface_height = grd_rdp_gfx_surface_get_height (gfx_surface);
   uint32_t src_stride = grd_session_rdp_get_stride_for_width (session_rdp,
-                                                              rdp_surface->width);
+                                                              surface_width);
   RDPGFX_SURFACE_COMMAND cmd = {0};
   RDPGFX_START_FRAME_PDU cmd_start = {0};
   RDPGFX_END_FRAME_PDU cmd_end = {0};
   gboolean needs_progressive_header = FALSE;
+  cairo_region_t *region;
   cairo_rectangle_int_t cairo_rect;
   RFX_RECT *rfx_rects, *rfx_rect;
   int n_rects;
@@ -672,11 +810,19 @@ refresh_gfx_surface_rfx_progressive (GrdRdpGraphicsPipeline *graphics_pipeline,
   int64_t enc_ack_time_us;
   int i;
 
+  region = grd_rdp_damage_detector_get_damage_region (rdp_surface->detector);
+  if (!region)
+    {
+      grd_session_rdp_notify_error (
+        session_rdp, GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
+      return FALSE;
+    }
+
   graphics_pipeline->rfx_context->mode = RLGR1;
   if (!rdp_surface->valid)
     {
       rfx_context_reset (graphics_pipeline->rfx_context,
-                         rdp_surface->width, rdp_surface->height);
+                         surface_width, surface_height);
       rdp_surface->valid = TRUE;
     }
 
@@ -703,9 +849,9 @@ refresh_gfx_surface_rfx_progressive (GrdRdpGraphicsPipeline *graphics_pipeline,
   rfx_message = rfx_encode_message (graphics_pipeline->rfx_context,
                                     rfx_rects,
                                     n_rects,
-                                    src_data,
-                                    rdp_surface->width,
-                                    rdp_surface->height,
+                                    buffer->local_data,
+                                    surface_width,
+                                    surface_height,
                                     src_stride);
   g_free (rfx_rects);
 
@@ -729,6 +875,7 @@ refresh_gfx_surface_rfx_progressive (GrdRdpGraphicsPipeline *graphics_pipeline,
     {
       g_warning ("[RDP.RDPGFX] rfx_progressive_write_message() failed");
       rfx_message_free (graphics_pipeline->rfx_context, rfx_message);
+      cairo_region_destroy (region);
       return FALSE;
     }
   rfx_message_free (graphics_pipeline->rfx_context, rfx_message);
@@ -744,8 +891,8 @@ refresh_gfx_surface_rfx_progressive (GrdRdpGraphicsPipeline *graphics_pipeline,
     }
 
   enc_ack_time_us = g_get_monotonic_time ();
-  grd_rdp_gfx_surface_unack_frame (gfx_surface, cmd_start.frameId,
-                                   enc_ack_time_us);
+  grd_rdp_gfx_frame_controller_unack_frame (frame_controller, cmd_start.frameId,
+                                            enc_ack_time_us);
 
   surface_serial = grd_rdp_gfx_surface_get_serial (gfx_surface);
   g_hash_table_insert (graphics_pipeline->frame_serial_table,
@@ -756,8 +903,8 @@ refresh_gfx_surface_rfx_progressive (GrdRdpGraphicsPipeline *graphics_pipeline,
 
   if (graphics_pipeline->frame_acks_suspended)
     {
-      grd_rdp_gfx_surface_ack_frame (gfx_surface, cmd_start.frameId,
-                                     enc_ack_time_us);
+      grd_rdp_gfx_frame_controller_ack_frame (frame_controller, cmd_start.frameId,
+                                              enc_ack_time_us);
       enqueue_tracked_frame_info (graphics_pipeline, surface_serial,
                                   cmd_start.frameId, enc_ack_time_us);
     }
@@ -768,39 +915,9 @@ refresh_gfx_surface_rfx_progressive (GrdRdpGraphicsPipeline *graphics_pipeline,
 
   *enc_time_us = enc_ack_time_us;
 
+  cairo_region_destroy (region);
+
   return TRUE;
-}
-
-static uint16_t
-get_next_free_surface_id (GrdRdpGraphicsPipeline *graphics_pipeline)
-{
-  uint16_t surface_id = graphics_pipeline->next_surface_id;
-
-  g_mutex_lock (&graphics_pipeline->gfx_mutex);
-  while (g_hash_table_contains (graphics_pipeline->surface_table,
-                                GUINT_TO_POINTER (surface_id)))
-    ++surface_id;
-  g_mutex_unlock (&graphics_pipeline->gfx_mutex);
-
-  graphics_pipeline->next_surface_id = surface_id + 1;
-
-  return surface_id;
-}
-
-static uint32_t
-get_next_free_serial (GrdRdpGraphicsPipeline *graphics_pipeline)
-{
-  uint32_t serial = graphics_pipeline->next_serial;
-
-  g_mutex_lock (&graphics_pipeline->gfx_mutex);
-  while (g_hash_table_contains (graphics_pipeline->serial_surface_table,
-                                GUINT_TO_POINTER (serial)))
-    ++serial;
-  g_mutex_unlock (&graphics_pipeline->gfx_mutex);
-
-  graphics_pipeline->next_serial = serial + 1;
-
-  return serial;
 }
 
 static void
@@ -888,16 +1005,13 @@ ensure_rtt_receivement (GrdRdpGraphicsPipeline *graphics_pipeline)
 void
 grd_rdp_graphics_pipeline_refresh_gfx (GrdRdpGraphicsPipeline *graphics_pipeline,
                                        GrdRdpSurface          *rdp_surface,
-                                       cairo_region_t         *region,
-                                       uint8_t                *src_data)
+                                       GrdRdpBuffer           *buffer)
 {
   RdpgfxServerContext *rdpgfx_context = graphics_pipeline->rdpgfx_context;
   rdpSettings *rdp_settings = rdpgfx_context->rdpcontext->settings;
   GrdSessionRdp *session_rdp = graphics_pipeline->session_rdp;
-#ifdef HAVE_HWACCEL_NVIDIA
   HWAccelContext *hwaccel_context;
   uint16_t surface_id;
-#endif /* HAVE_HWACCEL_NVIDIA */
   int64_t enc_time_us;
   gboolean success;
 
@@ -912,14 +1026,24 @@ grd_rdp_graphics_pipeline_refresh_gfx (GrdRdpGraphicsPipeline *graphics_pipeline
     g_clear_object (&rdp_surface->gfx_surface);
   if (!rdp_surface->gfx_surface)
     {
-      rdp_surface->gfx_surface = grd_rdp_gfx_surface_new (
-        graphics_pipeline, session_rdp, graphics_pipeline->pipeline_context,
-        rdp_surface, get_next_free_surface_id (graphics_pipeline),
-        get_next_free_serial (graphics_pipeline));
+      g_autoptr (GrdRdpGfxFrameController) frame_controller = NULL;
+      GrdRdpGfxSurfaceDescriptor surface_descriptor = {};
+
+      surface_descriptor.surface_id = get_next_free_surface_id (graphics_pipeline);
+      surface_descriptor.serial = get_next_free_serial (graphics_pipeline);
+      surface_descriptor.rdp_surface = rdp_surface;
+
+      rdp_surface->gfx_surface = grd_rdp_gfx_surface_new (graphics_pipeline,
+                                                          &surface_descriptor);
+      frame_controller =
+        grd_rdp_gfx_frame_controller_new (session_rdp,
+                                          graphics_pipeline->pipeline_context,
+                                          rdp_surface);
+      grd_rdp_gfx_surface_attach_frame_controller (rdp_surface->gfx_surface,
+                                                   g_steal_pointer (&frame_controller));
       map_surface_to_output (graphics_pipeline, rdp_surface->gfx_surface);
     }
 
-#ifdef HAVE_HWACCEL_NVIDIA
   surface_id = grd_rdp_gfx_surface_get_surface_id (rdp_surface->gfx_surface);
   if (rdp_settings->GfxH264 &&
       g_hash_table_lookup_extended (graphics_pipeline->surface_hwaccel_table,
@@ -928,14 +1052,12 @@ grd_rdp_graphics_pipeline_refresh_gfx (GrdRdpGraphicsPipeline *graphics_pipeline
     {
       g_assert (hwaccel_context->api == HW_ACCEL_API_NVENC);
       success = refresh_gfx_surface_avc420 (graphics_pipeline, hwaccel_context,
-                                            rdp_surface, region, src_data,
-                                            &enc_time_us);
+                                            rdp_surface, buffer, &enc_time_us);
     }
   else
-#endif /* HAVE_HWACCEL_NVIDIA */
     {
       success = refresh_gfx_surface_rfx_progressive (graphics_pipeline, rdp_surface,
-                                                     region, src_data, &enc_time_us);
+                                                     buffer, &enc_time_us);
     }
 
   if (success)
@@ -985,6 +1107,51 @@ cap_sets_contains_supported_version (RDPGFX_CAPSET *cap_sets,
   return FALSE;
 }
 
+static gboolean
+cap_sets_would_disable_avc (RDPGFX_CAPSET *cap_sets,
+                            uint16_t       n_cap_sets)
+{
+  size_t i;
+  uint16_t j;
+
+  for (i = 0; i < G_N_ELEMENTS (cap_list); ++i)
+    {
+      for (j = 0; j < n_cap_sets; ++j)
+        {
+          if (cap_sets[j].version == cap_list[i])
+            {
+              uint32_t flags = cap_sets[i].flags;
+
+              switch (cap_sets[j].version)
+                {
+                case RDPGFX_CAPVERSION_106:
+                case RDPGFX_CAPVERSION_105:
+                case RDPGFX_CAPVERSION_104:
+                case RDPGFX_CAPVERSION_103:
+                case RDPGFX_CAPVERSION_102:
+                case RDPGFX_CAPVERSION_101:
+                case RDPGFX_CAPVERSION_10:
+                  if (flags & RDPGFX_CAPS_FLAG_AVC_DISABLED)
+                    return TRUE;
+                  return FALSE;
+                case RDPGFX_CAPVERSION_81:
+                  if (!(flags & RDPGFX_CAPS_FLAG_AVC420_ENABLED))
+                    return TRUE;
+                  return FALSE;
+                case RDPGFX_CAPVERSION_8:
+                  return TRUE;
+                default:
+                  g_assert_not_reached ();
+                }
+            }
+        }
+    }
+
+  g_assert_not_reached ();
+
+  return TRUE;
+}
+
 static uint32_t
 rdpgfx_caps_advertise (RdpgfxServerContext             *rdpgfx_context,
                        const RDPGFX_CAPS_ADVERTISE_PDU *caps_advertise)
@@ -1001,7 +1168,7 @@ rdpgfx_caps_advertise (RdpgfxServerContext             *rdpgfx_context,
                  "CapsAdvertise PDU (RDPGFX: initialized, initial "
                  "version < 103)");
       grd_session_rdp_notify_error (graphics_pipeline->session_rdp,
-                                    ERRINFO_GRAPHICS_SUBSYSTEM_FAILED);
+                                    GRD_SESSION_RDP_ERROR_BAD_CAPS);
 
       return CHANNEL_RC_ALREADY_INITIALIZED;
     }
@@ -1012,10 +1179,23 @@ rdpgfx_caps_advertise (RdpgfxServerContext             *rdpgfx_context,
       g_warning ("[RDP.RDPGFX] CapsAdvertise PDU does NOT contain any supported "
                  "capability sets");
       grd_session_rdp_notify_error (graphics_pipeline->session_rdp,
-                                    ERRINFO_GRAPHICS_SUBSYSTEM_FAILED);
+                                    GRD_SESSION_RDP_ERROR_BAD_CAPS);
 
       return CHANNEL_RC_UNSUPPORTED_VERSION;
     }
+
+  if (graphics_pipeline->received_first_cap_sets &&
+      cap_sets_would_disable_avc (caps_advertise->capsSets,
+                                  caps_advertise->capsSetCount))
+    {
+      g_warning ("[RDP.RDPGFX] CapsAdvertise PDU would reset protocol with "
+                 "unsupported capability sets (disabling AVC)");
+      grd_session_rdp_notify_error (graphics_pipeline->session_rdp,
+                                    GRD_SESSION_RDP_ERROR_BAD_CAPS);
+
+      return CHANNEL_RC_ALREADY_INITIALIZED;
+    }
+  graphics_pipeline->received_first_cap_sets = TRUE;
 
   g_mutex_lock (&graphics_pipeline->caps_mutex);
   g_clear_pointer (&graphics_pipeline->cap_sets, g_free);
@@ -1065,9 +1245,12 @@ maybe_rewrite_frame_history (GrdRdpGraphicsPipeline *graphics_pipeline,
 
       if (surface_context->gfx_surface)
         {
-          grd_rdp_gfx_surface_unack_last_acked_frame (surface_context->gfx_surface,
-                                                      frame_info->frame_id,
-                                                      frame_info->enc_time_us);
+          GrdRdpGfxFrameController *frame_controller =
+            grd_rdp_gfx_surface_get_frame_controller (surface_context->gfx_surface);
+
+          grd_rdp_gfx_frame_controller_unack_last_acked_frame (frame_controller,
+                                                               frame_info->frame_id,
+                                                               frame_info->enc_time_us);
         }
 
       g_free (gfx_frame_info);
@@ -1080,8 +1263,10 @@ clear_all_unacked_frames_in_gfx_surface (gpointer key,
                                          gpointer user_data)
 {
   GrdRdpGfxSurface *gfx_surface = value;
+  GrdRdpGfxFrameController *frame_controller =
+    grd_rdp_gfx_surface_get_frame_controller (gfx_surface);
 
-  grd_rdp_gfx_surface_clear_all_unacked_frames (gfx_surface);
+  grd_rdp_gfx_frame_controller_clear_all_unacked_frames (frame_controller);
 }
 
 static gboolean
@@ -1143,9 +1328,12 @@ handle_frame_ack_event (GrdRdpGraphicsPipeline             *graphics_pipeline,
 
       if (surface_context->gfx_surface)
         {
-          grd_rdp_gfx_surface_ack_frame (surface_context->gfx_surface,
-                                         frame_acknowledge->frameId,
-                                         g_get_monotonic_time ());
+          GrdRdpGfxFrameController *frame_controller =
+            grd_rdp_gfx_surface_get_frame_controller (surface_context->gfx_surface);
+
+          grd_rdp_gfx_frame_controller_ack_frame (frame_controller,
+                                                  frame_acknowledge->frameId,
+                                                  g_get_monotonic_time ());
         }
 
       surface_serial_unref (graphics_pipeline, surface_serial);
@@ -1195,7 +1383,7 @@ grd_rdp_graphics_pipeline_maybe_init (GrdRdpGraphicsPipeline *graphics_pipeline)
       g_warning ("[RDP.RDPGFX] Failed to open Graphics Pipeline. The client "
                  "probably falsely advertised GFX support");
       grd_session_rdp_notify_error (graphics_pipeline->session_rdp,
-                                    ERRINFO_GRAPHICS_SUBSYSTEM_FAILED);
+                                    GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
       return;
     }
 

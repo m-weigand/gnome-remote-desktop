@@ -20,6 +20,7 @@
 #ifndef GRD_HWACCEL_NVIDIA_H
 #define GRD_HWACCEL_NVIDIA_H
 
+#include <ffnvcodec/dynlink_cuda.h>
 #include <glib-object.h>
 #include <stdint.h>
 
@@ -31,14 +32,56 @@ G_DECLARE_FINAL_TYPE (GrdHwAccelNvidia, grd_hwaccel_nvidia,
 
 GrdHwAccelNvidia *grd_hwaccel_nvidia_new (GrdEglThread *egl_thread);
 
+void grd_hwaccel_nvidia_get_cuda_functions (GrdHwAccelNvidia *hwaccel_nvidia,
+                                            gpointer         *cuda_funcs);
+
+void grd_hwaccel_nvidia_get_cuda_damage_kernels (GrdHwAccelNvidia *hwaccel_nvidia,
+                                                 CUfunction       *cu_chk_dmg_pxl,
+                                                 CUfunction       *cu_cmb_dmg_arr_cols,
+                                                 CUfunction       *cu_cmb_dmg_arr_rows,
+                                                 CUfunction       *cu_simplify_dmg_arr);
+
 void grd_hwaccel_nvidia_push_cuda_context (GrdHwAccelNvidia *hwaccel_nvidia);
 
 void grd_hwaccel_nvidia_pop_cuda_context (GrdHwAccelNvidia *hwaccel_nvidia);
+
+gboolean grd_hwaccel_nvidia_register_read_only_gl_buffer (GrdHwAccelNvidia   *hwaccel_nvidia,
+                                                          CUgraphicsResource *cuda_resource,
+                                                          uint32_t            buffer);
+
+void grd_hwaccel_nvidia_unregister_cuda_resource (GrdHwAccelNvidia   *hwaccel_nvidia,
+                                                  CUgraphicsResource  cuda_resource,
+                                                  CUstream            cuda_stream);
+
+gboolean grd_hwaccel_nvidia_map_cuda_resource (GrdHwAccelNvidia   *hwaccel_nvidia,
+                                               CUgraphicsResource  cuda_resource,
+                                               CUdeviceptr        *dev_ptr,
+                                               size_t             *size,
+                                               CUstream            cuda_stream);
+
+void grd_hwaccel_nvidia_unmap_cuda_resource (GrdHwAccelNvidia   *hwaccel_nvidia,
+                                             CUgraphicsResource  cuda_resource,
+                                             CUstream            cuda_stream);
+
+gboolean grd_hwaccel_nvidia_create_cuda_stream (GrdHwAccelNvidia *hwaccel_nvidia,
+                                                CUstream         *cuda_stream);
+
+void grd_hwaccel_nvidia_destroy_cuda_stream (GrdHwAccelNvidia *hwaccel_nvidia,
+                                             CUstream          cuda_stream);
+
+gboolean grd_hwaccel_nvidia_alloc_mem (GrdHwAccelNvidia *hwaccel_nvidia,
+                                       CUdeviceptr      *device_ptr,
+                                       size_t            size);
+
+void grd_hwaccel_nvidia_clear_mem_ptr (GrdHwAccelNvidia *hwaccel_nvidia,
+                                       CUdeviceptr      *device_ptr);
 
 gboolean grd_hwaccel_nvidia_create_nvenc_session (GrdHwAccelNvidia *hwaccel_nvidia,
                                                   uint32_t         *encode_session_id,
                                                   uint16_t          surface_width,
                                                   uint16_t          surface_height,
+                                                  uint16_t         *aligned_width,
+                                                  uint16_t         *aligned_height,
                                                   uint16_t          refresh_rate);
 
 void grd_hwaccel_nvidia_free_nvenc_session (GrdHwAccelNvidia *hwaccel_nvidia,
@@ -46,12 +89,17 @@ void grd_hwaccel_nvidia_free_nvenc_session (GrdHwAccelNvidia *hwaccel_nvidia,
 
 gboolean grd_hwaccel_nvidia_avc420_encode_bgrx_frame (GrdHwAccelNvidia  *hwaccel_nvidia,
                                                       uint32_t           encode_session_id,
-                                                      uint8_t           *src_data,
+                                                      CUdeviceptr        src_data,
+                                                      CUdeviceptr       *main_view_nv12,
                                                       uint16_t           src_width,
                                                       uint16_t           src_height,
                                                       uint16_t           aligned_width,
                                                       uint16_t           aligned_height,
-                                                      uint8_t          **bitstream,
-                                                      uint32_t          *bitstream_size);
+                                                      CUstream           cuda_stream);
+
+gboolean grd_hwaccel_nvidia_avc420_retrieve_bitstream (GrdHwAccelNvidia  *hwaccel_nvidia,
+                                                       uint32_t           encode_session_id,
+                                                       uint8_t          **bitstream,
+                                                       uint32_t          *bitstream_size);
 
 #endif /* GRD_HWACCEL_NVIDIA_H */

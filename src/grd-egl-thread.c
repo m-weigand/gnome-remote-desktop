@@ -75,9 +75,57 @@ typedef struct _GrdEglTaskSync
   GrdEglTask base;
 } GrdEglTaskSync;
 
+typedef struct _GrdEglTaskUpload
+{
+  GrdEglTask base;
+
+  GLuint pbo;
+
+  uint32_t height;
+  uint32_t stride;
+  uint8_t *src_data;
+
+  GrdEglThreadAllocBufferFunc allocate_func;
+  gpointer allocate_user_data;
+  GDestroyNotify allocate_user_data_destroy;
+
+  GrdEglThreadCustomFunc realize_func;
+  gpointer realize_user_data;
+  GDestroyNotify realize_user_data_destroy;
+} GrdEglTaskUpload;
+
+typedef struct _GrdEglTaskDeallocateMemory
+{
+  GrdEglTask base;
+
+  GLuint pbo;
+
+  GrdEglThreadDeallocBufferFunc deallocate_func;
+  gpointer deallocate_user_data;
+} GrdEglTaskDeallocateMemory;
+
+typedef struct _GrdEglTaskAllocateMemory
+{
+  GrdEglTask base;
+
+  uint32_t height;
+  uint32_t stride;
+
+  GrdEglThreadAllocBufferFunc allocate_func;
+  gpointer allocate_user_data;
+} GrdEglTaskAllocateMemory;
+
 typedef struct _GrdEglTaskDownload
 {
   GrdEglTask base;
+
+  GLuint pbo;
+  uint32_t pbo_height;
+  uint32_t pbo_stride;
+
+  GrdEglThreadImportIface iface;
+  gpointer import_user_data;
+  GDestroyNotify import_destroy_notify;
 
   uint8_t *dst_data;
   int dst_row_width;
@@ -364,6 +412,20 @@ grd_egl_task_download_free (GrdEglTask *task_base)
   g_free (task->offsets);
   g_free (task->modifiers);
 
+  if (task->import_destroy_notify)
+    task->import_destroy_notify (task->import_user_data);
+
+  grd_egl_task_free (task_base);
+}
+
+static void
+grd_egl_task_upload_free (GrdEglTask *task_base)
+{
+  GrdEglTaskUpload *task = (GrdEglTaskUpload *) task_base;
+
+  task->allocate_user_data_destroy (task->allocate_user_data);
+  task->realize_user_data_destroy (task->realize_user_data);
+
   grd_egl_task_free (task_base);
 }
 
@@ -648,18 +710,29 @@ create_dmabuf_image (GrdEglThread   *egl_thread,
 }
 
 static gboolean
-bind_egl_image (GrdEglThread       *egl_thread,
-                EGLImageKHR         egl_image,
-                GrdEglTaskDownload *task,
-                GLuint             *tex,
-                GLuint             *fbo)
+bind_egl_image (GrdEglThread *egl_thread,
+                EGLImageKHR   egl_image,
+                int           dst_row_width,
+                GLuint       *tex,
+                GLuint       *fbo)
 {
+  GLenum error;
+
   glGenTextures (1, tex);
   glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
   glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glBindTexture (GL_TEXTURE_2D, *tex);
-  glPixelStorei (GL_PACK_ROW_LENGTH, task->dst_row_width);
+  glPixelStorei (GL_PACK_ROW_LENGTH, dst_row_width);
   glEGLImageTargetTexture2DOES (GL_TEXTURE_2D, egl_image);
+  error = glGetError ();
+  if (error != GL_NO_ERROR)
+    {
+      g_warning ("[EGL Thread] Failed to bind DMA buf texture: %u", error);
+      return FALSE;
+    }
+
+  if (!fbo)
+    return TRUE;
 
   glGenFramebuffers (1, fbo);
   glBindFramebuffer (GL_FRAMEBUFFER, *fbo);
@@ -676,11 +749,13 @@ bind_egl_image (GrdEglThread       *egl_thread,
 }
 
 static void
-read_pixels (GrdEglTaskDownload *task)
+read_pixels (uint8_t      *dst_data,
+             unsigned int  width,
+             unsigned int  height)
 {
-  glReadPixels (0, 0, task->width, task->height,
+  glReadPixels (0, 0, width, height,
                 GL_BGRA, GL_UNSIGNED_BYTE,
-                task->dst_data);
+                dst_data);
 }
 
 static void
@@ -691,13 +766,30 @@ download_in_impl (gpointer data,
   GrdEglTaskDownload *task = user_data;
   EGLImageKHR egl_image;
   gboolean success = FALSE;
+  uint32_t buffer_size;
   GLuint tex = 0;
   GLuint fbo = 0;
 
-  eglMakeCurrent (egl_thread->impl.egl_display,
-                  EGL_NO_SURFACE,
-                  EGL_NO_SURFACE,
-                  egl_thread->impl.egl_context);
+  buffer_size = task->pbo_stride * task->pbo_height * sizeof (uint8_t);
+  if (task->iface.allocate && !task->pbo)
+    {
+      GLuint pbo = 0;
+
+      glGenBuffers (1, &pbo);
+      glBindBuffer (GL_PIXEL_PACK_BUFFER, pbo);
+      glBufferData (GL_PIXEL_PACK_BUFFER, buffer_size, NULL, GL_DYNAMIC_DRAW);
+      glBindBuffer (GL_PIXEL_PACK_BUFFER, 0);
+
+      if (!task->iface.allocate (task->import_user_data, pbo))
+        {
+          g_warning ("[EGL Thread] Failed to allocate GL resources");
+          glDeleteBuffers (1, &pbo);
+          goto out;
+        }
+
+      g_debug ("[EGL Thread] Allocating GL resources was successful");
+      task->pbo = pbo;
+    }
 
   egl_image =
     create_dmabuf_image (egl_thread,
@@ -712,14 +804,39 @@ download_in_impl (gpointer data,
   if (egl_image == EGL_NO_IMAGE)
     goto out;
 
-  if (!bind_egl_image (egl_thread, egl_image, task, &tex, &fbo))
+  if (!bind_egl_image (egl_thread, egl_image, task->dst_row_width, &tex,
+                       task->dst_data ? &fbo : NULL))
     goto out;
 
-  read_pixels (task);
+  if (task->iface.realize)
+    {
+      GLenum error;
+
+      glBindBuffer (GL_PIXEL_PACK_BUFFER, task->pbo);
+      glBufferData (GL_PIXEL_PACK_BUFFER, buffer_size, NULL, GL_DYNAMIC_DRAW);
+      glReadPixels (0, 0, task->width, task->height,
+                    GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+      error = glGetError ();
+      if (error != GL_NO_ERROR)
+        {
+          g_warning ("[EGL Thread] Failed to update buffer data: %u", error);
+          goto out;
+        }
+
+      glBindBuffer (GL_PIXEL_PACK_BUFFER, 0);
+
+      if (!task->iface.realize (task->import_user_data))
+        goto out;
+    }
+
+  if (task->dst_data)
+    read_pixels (task->dst_data, task->width, task->height);
 
   success = TRUE;
 
 out:
+  glBindBuffer (GL_PIXEL_PACK_BUFFER, 0);
+
   if (fbo)
     {
       glBindFramebuffer (GL_FRAMEBUFFER, 0);
@@ -733,6 +850,101 @@ out:
 
   if (egl_image != EGL_NO_IMAGE)
     eglDestroyImageKHR (egl_thread->impl.egl_display, egl_image);
+
+  task->base.callback (success, task->base.callback_user_data);
+}
+
+static void
+allocate_in_impl (gpointer data,
+                  gpointer user_data)
+{
+  GrdEglTaskAllocateMemory *task = user_data;
+  gboolean success = FALSE;
+  uint32_t buffer_size;
+  GLuint pbo = 0;
+
+  buffer_size = task->stride * task->height * sizeof (uint8_t);
+
+  glGenBuffers (1, &pbo);
+  glBindBuffer (GL_PIXEL_PACK_BUFFER, pbo);
+  glBufferData (GL_PIXEL_PACK_BUFFER, buffer_size, NULL, GL_DYNAMIC_DRAW);
+  glBindBuffer (GL_PIXEL_PACK_BUFFER, 0);
+
+  if (task->allocate_func (task->allocate_user_data, pbo))
+    success = TRUE;
+
+  if (!success && pbo)
+    {
+      glDeleteBuffers (1, &pbo);
+      pbo = 0;
+    }
+
+  task->base.callback (success, task->base.callback_user_data);
+}
+
+static void
+deallocate_in_impl (gpointer data,
+                    gpointer user_data)
+{
+  GrdEglTaskDeallocateMemory *task = user_data;
+
+  task->deallocate_func (task->deallocate_user_data);
+
+  if (task->pbo)
+    glDeleteBuffers (1, &task->pbo);
+
+  if (task->base.callback)
+    task->base.callback (TRUE, task->base.callback_user_data);
+}
+
+static void
+upload_in_impl (gpointer data,
+                gpointer user_data)
+{
+  GrdEglTaskUpload *task = user_data;
+  gboolean success = FALSE;
+  uint32_t buffer_size;
+  GLenum error;
+
+  buffer_size = task->stride * task->height * sizeof (uint8_t);
+
+  if (!task->pbo)
+    {
+      GLuint pbo = 0;
+
+      glGenBuffers (1, &pbo);
+      glBindBuffer (GL_PIXEL_PACK_BUFFER, pbo);
+      glBufferData (GL_PIXEL_PACK_BUFFER, buffer_size, NULL, GL_DYNAMIC_DRAW);
+      glBindBuffer (GL_PIXEL_PACK_BUFFER, 0);
+
+      if (!task->allocate_func (task->allocate_user_data, pbo))
+        {
+          g_warning ("[EGL Thread] Failed to allocate GL resources");
+          glDeleteBuffers (1, &pbo);
+          goto out;
+        }
+
+      g_debug ("[EGL Thread] Allocating GL resources was successful");
+      task->pbo = pbo;
+    }
+
+  glBindBuffer (GL_PIXEL_PACK_BUFFER, task->pbo);
+  glBufferData (GL_PIXEL_PACK_BUFFER, buffer_size, NULL, GL_DYNAMIC_DRAW);
+  glBufferSubData (GL_PIXEL_PACK_BUFFER, 0, buffer_size, task->src_data);
+  error = glGetError ();
+  if (error != GL_NO_ERROR)
+    {
+      g_warning ("[EGL Thread] Failed to update buffer data: %u", error);
+      goto out;
+    }
+
+  if (!task->realize_func (task->realize_user_data))
+    goto out;
+
+  success = TRUE;
+
+out:
+  glBindBuffer (GL_PIXEL_PACK_BUFFER, 0);
 
   task->base.callback (success, task->base.callback_user_data);
 }
@@ -755,28 +967,43 @@ run_custom_task_in_impl (gpointer data,
 
   success = task->custom_func (task->user_data);
 
-  task->base.callback (success, task->base.callback_user_data);
+  if (task->base.callback)
+    task->base.callback (success, task->base.callback_user_data);
 }
 
 void
-grd_egl_thread_download (GrdEglThread         *egl_thread,
-                         uint8_t              *dst_data,
-                         int                   dst_row_width,
-                         uint32_t              format,
-                         unsigned int          width,
-                         unsigned int          height,
-                         uint32_t              n_planes,
-                         const int            *fds,
-                         const uint32_t       *strides,
-                         const uint32_t       *offsets,
-                         const uint64_t       *modifiers,
-                         GrdEglThreadCallback  callback,
-                         gpointer              user_data,
-                         GDestroyNotify        destroy)
+grd_egl_thread_download (GrdEglThread                  *egl_thread,
+                         uint32_t                       pbo,
+                         uint32_t                       pbo_height,
+                         uint32_t                       pbo_stride,
+                         const GrdEglThreadImportIface *iface,
+                         gpointer                       import_user_data,
+                         GDestroyNotify                 import_destroy_notify,
+                         uint8_t                       *dst_data,
+                         int                            dst_row_width,
+                         uint32_t                       format,
+                         unsigned int                   width,
+                         unsigned int                   height,
+                         uint32_t                       n_planes,
+                         const int                     *fds,
+                         const uint32_t                *strides,
+                         const uint32_t                *offsets,
+                         const uint64_t                *modifiers,
+                         GrdEglThreadCallback           callback,
+                         gpointer                       user_data,
+                         GDestroyNotify                 destroy)
 {
   GrdEglTaskDownload *task;
 
   task = g_new0 (GrdEglTaskDownload, 1);
+
+  task->pbo = pbo;
+  task->pbo_height = pbo_height;
+  task->pbo_stride = pbo_stride;
+
+  task->iface = iface ? *iface : (GrdEglThreadImportIface) {};
+  task->import_user_data = import_user_data;
+  task->import_destroy_notify = import_destroy_notify;
 
   task->dst_data = dst_data;
   task->dst_row_width = dst_row_width;
@@ -792,6 +1019,107 @@ grd_egl_thread_download (GrdEglThread         *egl_thread,
 
   task->base.func = download_in_impl;
   task->base.destroy = (GDestroyNotify) grd_egl_task_download_free;
+  task->base.callback = callback;
+  task->base.callback_user_data = user_data;
+  task->base.callback_destroy = destroy;
+
+  g_async_queue_push (egl_thread->task_queue, task);
+  g_main_context_wakeup (egl_thread->impl.main_context);
+}
+
+void
+grd_egl_thread_allocate (GrdEglThread                *egl_thread,
+                         uint32_t                     height,
+                         uint32_t                     stride,
+                         GrdEglThreadAllocBufferFunc  allocate_func,
+                         gpointer                     allocate_user_data,
+                         GrdEglThreadCallback         callback,
+                         gpointer                     user_data,
+                         GDestroyNotify               destroy)
+{
+  GrdEglTaskAllocateMemory *task;
+
+  task = g_new0 (GrdEglTaskAllocateMemory, 1);
+
+  task->height = height;
+  task->stride = stride;
+  task->allocate_func = allocate_func;
+  task->allocate_user_data = allocate_user_data;
+
+  task->base.func = allocate_in_impl;
+  task->base.destroy = (GDestroyNotify) grd_egl_task_free;
+  task->base.callback = callback;
+  task->base.callback_user_data = user_data;
+  task->base.callback_destroy = destroy;
+
+  g_async_queue_push (egl_thread->task_queue, task);
+  g_main_context_wakeup (egl_thread->impl.main_context);
+}
+
+void
+grd_egl_thread_deallocate (GrdEglThread                  *egl_thread,
+                           uint32_t                       pbo,
+                           GrdEglThreadDeallocBufferFunc  deallocate_func,
+                           gpointer                       deallocate_user_data,
+                           GrdEglThreadCallback           callback,
+                           gpointer                       user_data,
+                           GDestroyNotify                 destroy)
+{
+  GrdEglTaskDeallocateMemory *task;
+
+  task = g_new0 (GrdEglTaskDeallocateMemory, 1);
+
+  task->pbo = pbo;
+
+  task->deallocate_func = deallocate_func;
+  task->deallocate_user_data = deallocate_user_data;
+
+  task->base.func = deallocate_in_impl;
+  task->base.destroy = (GDestroyNotify) grd_egl_task_free;
+  task->base.callback = callback;
+  task->base.callback_user_data = user_data;
+  task->base.callback_destroy = destroy;
+
+  g_async_queue_push (egl_thread->task_queue, task);
+  g_main_context_wakeup (egl_thread->impl.main_context);
+}
+
+void
+grd_egl_thread_upload (GrdEglThread                *egl_thread,
+                       uint32_t                     pbo,
+                       uint32_t                     height,
+                       uint32_t                     stride,
+                       uint8_t                     *src_data,
+                       GrdEglThreadAllocBufferFunc  allocate_func,
+                       gpointer                     allocate_user_data,
+                       GDestroyNotify               allocate_user_data_destroy,
+                       GrdEglThreadCustomFunc       realize_func,
+                       gpointer                     realize_user_data,
+                       GDestroyNotify               realize_user_data_destroy,
+                       GrdEglThreadCallback         callback,
+                       gpointer                     user_data,
+                       GDestroyNotify               destroy)
+{
+  GrdEglTaskUpload *task;
+
+  task = g_new0 (GrdEglTaskUpload, 1);
+
+  task->pbo = pbo;
+
+  task->height = height;
+  task->stride = stride;
+  task->src_data = src_data;
+
+  task->allocate_func = allocate_func;
+  task->allocate_user_data = allocate_user_data;
+  task->allocate_user_data_destroy = allocate_user_data_destroy;
+
+  task->realize_func = realize_func;
+  task->realize_user_data = realize_user_data;
+  task->realize_user_data_destroy = realize_user_data_destroy;
+
+  task->base.func = upload_in_impl;
+  task->base.destroy = (GDestroyNotify) grd_egl_task_upload_free;
   task->base.callback = callback;
   task->base.callback_user_data = user_data;
   task->base.callback_destroy = destroy;

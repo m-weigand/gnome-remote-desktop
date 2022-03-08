@@ -32,7 +32,15 @@
 
 #include "grd-context.h"
 #include "grd-egl-thread.h"
+#include "grd-hwaccel-nvidia.h"
 #include "grd-pipewire-utils.h"
+#include "grd-rdp-buffer.h"
+#include "grd-rdp-buffer-pool.h"
+#include "grd-rdp-damage-detector.h"
+#include "grd-rdp-surface.h"
+#include "grd-utils.h"
+
+#define DEFAULT_BUFFER_POOL_SIZE 5
 
 enum
 {
@@ -54,9 +62,11 @@ struct _GrdRdpFrame
 {
   gatomicrefcount refcount;
 
-  void *data;
-  uint16_t width;
-  uint16_t height;
+  GrdRdpBuffer *buffer;
+
+  gboolean has_map;
+  size_t map_size;
+  uint8_t *map;
 
   gboolean has_pointer_data;
   uint8_t *pointer_bitmap;
@@ -71,17 +81,46 @@ struct _GrdRdpFrame
   gpointer callback_user_data;
 };
 
+typedef struct
+{
+  GrdHwAccelNvidia *hwaccel_nvidia;
+  GrdRdpBuffer *rdp_buffer;
+} UnmapBufferData;
+
+typedef struct
+{
+  GrdHwAccelNvidia *hwaccel_nvidia;
+  GrdRdpBuffer *rdp_buffer;
+} AllocateBufferData;
+
+typedef struct
+{
+  GrdHwAccelNvidia *hwaccel_nvidia;
+  GrdRdpBuffer *rdp_buffer;
+} RealizeBufferData;
+
+typedef struct
+{
+  AllocateBufferData allocate;
+  RealizeBufferData realize;
+
+  GrdRdpBuffer *rdp_buffer;
+} ImportBufferData;
+
 struct _GrdRdpPipeWireStream
 {
   GObject parent;
 
   GrdSessionRdp *session_rdp;
+  GrdRdpSurface *rdp_surface;
 
   GSource *pipewire_source;
   struct pw_context *pipewire_context;
   struct pw_core *pipewire_core;
 
   struct spa_hook pipewire_core_listener;
+
+  GrdRdpBufferPool *buffer_pool;
 
   GSource *render_source;
   GMutex frame_mutex;
@@ -133,10 +172,36 @@ grd_rdp_frame_unref (GrdRdpFrame *frame)
 {
   if (g_atomic_ref_count_dec (&frame->refcount))
     {
-      g_free (frame->data);
+      g_assert (!frame->has_map);
+
+      g_clear_pointer (&frame->buffer, grd_rdp_buffer_release);
       g_free (frame->pointer_bitmap);
       g_free (frame);
     }
+}
+
+void
+grd_rdp_pipewire_stream_resize (GrdRdpPipeWireStream *stream,
+                                GrdRdpVirtualMonitor *virtual_monitor)
+{
+  struct spa_rectangle virtual_monitor_rect;
+  uint8_t params_buffer[1024];
+  struct spa_pod_builder pod_builder;
+  const struct spa_pod *params[1];
+
+  virtual_monitor_rect = SPA_RECTANGLE (virtual_monitor->width,
+                                        virtual_monitor->height);
+
+  pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof (params_buffer));
+
+  params[0] = spa_pod_builder_add_object (
+    &pod_builder,
+    SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
+    SPA_FORMAT_VIDEO_size, SPA_POD_Rectangle (&virtual_monitor_rect),
+    0);
+
+  pw_stream_update_params (stream->pipewire_stream,
+                           params, G_N_ELEMENTS (params));
 }
 
 static gboolean
@@ -147,17 +212,22 @@ do_render (gpointer user_data)
 
   g_mutex_lock (&stream->frame_mutex);
   frame = g_steal_pointer (&stream->pending_frame);
+
+  if (frame && frame->buffer)
+    {
+      g_mutex_lock (&stream->rdp_surface->surface_mutex);
+      g_assert (!stream->rdp_surface->new_framebuffer);
+
+      stream->rdp_surface->new_framebuffer = g_steal_pointer (&frame->buffer);
+      g_mutex_unlock (&stream->rdp_surface->surface_mutex);
+    }
   g_mutex_unlock (&stream->frame_mutex);
 
   if (!frame)
     return G_SOURCE_CONTINUE;
 
-  if (frame->data)
-    {
-      grd_session_rdp_take_buffer (stream->session_rdp,
-                                   g_steal_pointer (&frame->data),
-                                   frame->width, frame->height);
-    }
+  grd_session_rdp_maybe_encode_new_frame (stream->session_rdp,
+                                          stream->rdp_surface);
 
   if (frame->pointer_bitmap)
     {
@@ -292,6 +362,43 @@ on_stream_state_changed (void                 *user_data,
 }
 
 static void
+on_sync_complete (gboolean success,
+                  gpointer user_data)
+{
+  GrdSyncPoint *sync_point = user_data;
+
+  grd_sync_point_complete (sync_point, success);
+}
+
+static void
+sync_egl_thread (GrdEglThread *egl_thread)
+{
+  GrdSyncPoint sync_point = {};
+
+  grd_sync_point_init (&sync_point);
+  grd_egl_thread_sync (egl_thread, on_sync_complete, &sync_point, NULL);
+
+  grd_sync_point_wait_for_completion (&sync_point);
+  grd_sync_point_clear (&sync_point);
+}
+
+static void
+release_all_buffers (GrdRdpPipeWireStream *stream)
+{
+  g_mutex_lock (&stream->frame_mutex);
+  if (stream->pending_frame)
+    g_clear_pointer (&stream->pending_frame->buffer, grd_rdp_buffer_release);
+  g_mutex_unlock (&stream->frame_mutex);
+
+  g_mutex_lock (&stream->rdp_surface->surface_mutex);
+  g_clear_pointer (&stream->rdp_surface->new_framebuffer,
+                   grd_rdp_buffer_release);
+  g_clear_pointer (&stream->rdp_surface->pending_framebuffer,
+                   grd_rdp_buffer_release);
+  g_mutex_unlock (&stream->rdp_surface->surface_mutex);
+}
+
+static void
 on_stream_param_changed (void                 *user_data,
                          uint32_t              id,
                          const struct spa_pod *format)
@@ -299,6 +406,10 @@ on_stream_param_changed (void                 *user_data,
   GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
   GrdSession *session = GRD_SESSION (stream->session_rdp);
   GrdContext *context = grd_session_get_context (session);
+  GrdEglThread *egl_thread = grd_context_get_egl_thread (context);
+  uint32_t width;
+  uint32_t height;
+  uint32_t stride;
   uint8_t params_buffer[1024];
   struct spa_pod_builder pod_builder;
   enum spa_data_type allowed_buffer_types;
@@ -308,11 +419,32 @@ on_stream_param_changed (void                 *user_data,
     return;
 
   spa_format_video_raw_parse (format, &stream->spa_format);
+  height = stream->spa_format.size.height;
+  width = stream->spa_format.size.width;
+  stride = grd_session_rdp_get_stride_for_width (stream->session_rdp, width);
+
+  g_debug ("[RDP] Stream parameters changed. New surface size: [%u, %u]",
+           width, height);
+
+  if (egl_thread)
+    sync_egl_thread (egl_thread);
+  release_all_buffers (stream);
+  grd_rdp_surface_reset (stream->rdp_surface);
+
+  if (!grd_rdp_damage_detector_resize_surface (stream->rdp_surface->detector,
+                                               width, height) ||
+      !grd_rdp_buffer_pool_resize_buffers (stream->buffer_pool,
+                                           width, height, stride))
+    {
+      grd_session_rdp_notify_error (
+        stream->session_rdp, GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
+      return;
+    }
 
   pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof (params_buffer));
 
   allowed_buffer_types = 1 << SPA_DATA_MemFd;
-  if (grd_context_get_egl_thread (context))
+  if (egl_thread)
     allowed_buffer_types |= 1 << SPA_DATA_DmaBuf;
 
   params[0] = spa_pod_builder_add_object (
@@ -343,6 +475,51 @@ on_stream_param_changed (void                 *user_data,
 }
 
 static void
+process_mouse_pointer_bitmap (GrdRdpPipeWireStream *stream,
+                              struct spa_buffer    *buffer,
+                              GrdRdpFrame          *frame)
+{
+  struct spa_meta_cursor *spa_meta_cursor;
+  struct spa_meta_bitmap *spa_meta_bitmap;
+  GrdPixelFormat format;
+
+  spa_meta_cursor = spa_buffer_find_meta_data (buffer, SPA_META_Cursor,
+                                               sizeof *spa_meta_cursor);
+
+  g_assert (spa_meta_cursor);
+  g_assert (spa_meta_cursor_is_valid (spa_meta_cursor));
+  g_assert (spa_meta_cursor->bitmap_offset);
+
+  spa_meta_bitmap = SPA_MEMBER (spa_meta_cursor,
+                                spa_meta_cursor->bitmap_offset,
+                                struct spa_meta_bitmap);
+
+  if (spa_meta_bitmap &&
+      spa_meta_bitmap->size.width > 0 &&
+      spa_meta_bitmap->size.height > 0 &&
+      grd_spa_pixel_format_to_grd_pixel_format (spa_meta_bitmap->format,
+                                                &format))
+    {
+      uint8_t *buf;
+
+      buf = SPA_MEMBER (spa_meta_bitmap, spa_meta_bitmap->offset, uint8_t);
+      frame->pointer_bitmap =
+        g_memdup2 (buf, spa_meta_bitmap->size.height *
+                        spa_meta_bitmap->stride);
+      frame->pointer_hotspot_x = spa_meta_cursor->hotspot.x;
+      frame->pointer_hotspot_y = spa_meta_cursor->hotspot.y;
+      frame->pointer_width = spa_meta_bitmap->size.width;
+      frame->pointer_height = spa_meta_bitmap->size.height;
+      frame->has_pointer_data = TRUE;
+    }
+  else if (spa_meta_bitmap)
+    {
+      frame->pointer_is_hidden = TRUE;
+      frame->has_pointer_data = TRUE;
+    }
+}
+
+static void
 copy_frame_data (GrdRdpFrame *frame,
                  uint8_t     *src_data,
                  int          width,
@@ -351,20 +528,100 @@ copy_frame_data (GrdRdpFrame *frame,
                  int          src_stride,
                  int          bpp)
 {
+  GrdRdpBuffer *buffer = frame->buffer;
   int y;
 
-  frame->data = g_malloc (height * dst_stride);
   for (y = 0; y < height; ++y)
     {
-      memcpy (((uint8_t *) frame->data) + y * dst_stride,
+      memcpy (((uint8_t *) buffer->local_data) + y * dst_stride,
               ((uint8_t *) src_data) + y * src_stride,
               width * 4);
     }
 }
 
+static gboolean
+cuda_unmap_resource (gpointer user_data)
+{
+  UnmapBufferData *data = user_data;
+
+  if (!data->rdp_buffer->mapped_cuda_pointer)
+    return TRUE;
+
+  grd_hwaccel_nvidia_unmap_cuda_resource (data->hwaccel_nvidia,
+                                          data->rdp_buffer->cuda_resource,
+                                          data->rdp_buffer->cuda_stream);
+  data->rdp_buffer->mapped_cuda_pointer = 0;
+
+  return TRUE;
+}
+
 static void
-on_dma_buf_downloaded (gboolean success,
-                       gpointer user_data)
+unmap_cuda_resources (GrdEglThread     *egl_thread,
+                      GrdHwAccelNvidia *hwaccel_nvidia,
+                      GrdRdpBuffer     *rdp_buffer)
+{
+  UnmapBufferData *data;
+
+  data = g_new0 (UnmapBufferData, 1);
+  data->hwaccel_nvidia = hwaccel_nvidia;
+  data->rdp_buffer = rdp_buffer;
+
+  grd_egl_thread_run_custom_task (egl_thread,
+                                  cuda_unmap_resource, data,
+                                  NULL, data, g_free);
+}
+
+static gboolean
+cuda_allocate_buffer (gpointer user_data,
+                      uint32_t pbo)
+{
+  AllocateBufferData *data = user_data;
+  GrdRdpBuffer *rdp_buffer = data->rdp_buffer;
+  gboolean success;
+
+  success = grd_hwaccel_nvidia_register_read_only_gl_buffer (data->hwaccel_nvidia,
+                                                             &rdp_buffer->cuda_resource,
+                                                             pbo);
+  if (success)
+    rdp_buffer->pbo = pbo;
+
+  return success;
+}
+
+static gboolean
+allocate_buffer (gpointer user_data,
+                 uint32_t pbo)
+{
+  ImportBufferData *data = user_data;
+
+  return cuda_allocate_buffer (&data->allocate, pbo);
+}
+
+static gboolean
+cuda_map_resource (gpointer user_data)
+{
+  RealizeBufferData *data = user_data;
+  GrdRdpBuffer *rdp_buffer = data->rdp_buffer;
+  size_t mapped_size = 0;
+
+  return grd_hwaccel_nvidia_map_cuda_resource (data->hwaccel_nvidia,
+                                               rdp_buffer->cuda_resource,
+                                               &rdp_buffer->mapped_cuda_pointer,
+                                               &mapped_size,
+                                               rdp_buffer->cuda_stream);
+}
+
+static gboolean
+realize_buffer (gpointer user_data)
+{
+  ImportBufferData *data = user_data;
+
+  return cuda_map_resource (&data->realize);
+}
+
+static void
+on_framebuffer_ready (gboolean success,
+                      gpointer user_data)
 {
   GrdRdpFrame *frame = user_data;
 
@@ -375,19 +632,20 @@ on_dma_buf_downloaded (gboolean success,
 }
 
 static void
-process_buffer (GrdRdpPipeWireStream     *stream,
-                struct spa_buffer        *buffer,
-                GrdRdpFrameReadyCallback  callback,
-                gpointer                  user_data)
+process_frame_data (GrdRdpPipeWireStream *stream,
+                    struct spa_buffer    *buffer,
+                    GrdRdpFrame          *frame)
 {
+  GrdRdpFrameReadyCallback callback = frame->callback;
+  gpointer user_data = frame->callback_user_data;
   uint32_t drm_format;
   int bpp;
   int width;
   int height;
   int src_stride;
   int dst_stride;
-  struct spa_meta_cursor *spa_meta_cursor;
-  g_autoptr (GrdRdpFrame) frame = NULL;
+
+  g_assert (buffer->datas[0].chunk->size > 0);
 
   height = stream->spa_format.size.height;
   width = stream->spa_format.size.width;
@@ -397,56 +655,20 @@ process_buffer (GrdRdpPipeWireStream     *stream,
   grd_get_spa_format_details (stream->spa_format.format,
                               &drm_format, &bpp);
 
-  frame = grd_rdp_frame_new (stream, callback, user_data);
-
-  spa_meta_cursor = spa_buffer_find_meta_data (buffer, SPA_META_Cursor,
-                                               sizeof *spa_meta_cursor);
-  if (spa_meta_cursor && spa_meta_cursor_is_valid (spa_meta_cursor))
+  if (buffer->datas[0].type == SPA_DATA_MemFd)
     {
-      struct spa_meta_bitmap *spa_meta_bitmap = NULL;
-      GrdPixelFormat format;
-
-      if (spa_meta_cursor->bitmap_offset)
-        {
-          spa_meta_bitmap = SPA_MEMBER (spa_meta_cursor,
-                                        spa_meta_cursor->bitmap_offset,
-                                        struct spa_meta_bitmap);
-        }
-
-      if (spa_meta_bitmap &&
-          spa_meta_bitmap->size.width > 0 &&
-          spa_meta_bitmap->size.height > 0 &&
-          grd_spa_pixel_format_to_grd_pixel_format (spa_meta_bitmap->format,
-                                                    &format))
-        {
-          uint8_t *buf;
-
-          buf = SPA_MEMBER (spa_meta_bitmap, spa_meta_bitmap->offset, uint8_t);
-          frame->pointer_bitmap = g_memdup2 (buf, spa_meta_bitmap->size.height *
-                                                  spa_meta_bitmap->stride);
-          frame->pointer_hotspot_x = spa_meta_cursor->hotspot.x;
-          frame->pointer_hotspot_y = spa_meta_cursor->hotspot.y;
-          frame->pointer_width = spa_meta_bitmap->size.width;
-          frame->pointer_height = spa_meta_bitmap->size.height;
-          frame->has_pointer_data = TRUE;
-        }
-      else if (spa_meta_bitmap)
-        {
-          frame->pointer_is_hidden = TRUE;
-          frame->has_pointer_data = TRUE;
-        }
-    }
-
-  if (buffer->datas[0].chunk->size == 0)
-    {
-      callback (stream, g_steal_pointer (&frame), TRUE, user_data);
-      return;
-    }
-  else if (buffer->datas[0].type == SPA_DATA_MemFd)
-    {
+      GrdSession *session = GRD_SESSION (stream->session_rdp);
+      GrdContext *context = grd_session_get_context (session);
+      GrdEglThread *egl_thread = grd_context_get_egl_thread (context);
+      GrdHwAccelNvidia *hwaccel_nvidia = stream->rdp_surface->hwaccel_nvidia;
+      AllocateBufferData *allocate_buffer_data;
+      RealizeBufferData *realize_buffer_data;
+      GrdRdpBuffer *rdp_buffer;
       size_t size;
       uint8_t *map;
       void *src_data;
+      uint32_t pbo;
+      uint8_t *data_to_upload;
 
       size = buffer->datas[0].maxsize + buffer->datas[0].mapoffset;
       map = mmap (NULL, size, PROT_READ, MAP_PRIVATE, buffer->datas[0].fd, 0);
@@ -457,25 +679,81 @@ process_buffer (GrdRdpPipeWireStream     *stream,
           return;
         }
       src_data = SPA_MEMBER (map, buffer->datas[0].mapoffset, uint8_t);
-      frame->width = width;
-      frame->height = height;
 
-      copy_frame_data (frame,
-                       src_data,
-                       width, height,
-                       dst_stride,
-                       src_stride,
-                       bpp);
+      frame->buffer = grd_rdp_buffer_pool_acquire (stream->buffer_pool);
+      if (!frame->buffer)
+        {
+          grd_session_rdp_notify_error (stream->session_rdp,
+                                        GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
+          callback (stream, g_steal_pointer (&frame), FALSE, user_data);
+          return;
+        }
+      rdp_buffer = frame->buffer;
+      pbo = rdp_buffer->pbo;
 
-      munmap (map, size);
+      if (stream->rdp_surface->needs_no_local_data &&
+          src_stride == dst_stride)
+        {
+          frame->map_size = size;
+          frame->map = map;
+          frame->has_map = TRUE;
 
-      callback (stream, g_steal_pointer (&frame), TRUE, user_data);
+          data_to_upload = src_data;
+        }
+      else
+        {
+          copy_frame_data (frame,
+                           src_data,
+                           width, height,
+                           dst_stride,
+                           src_stride,
+                           bpp);
+
+          munmap (map, size);
+
+          data_to_upload = rdp_buffer->local_data;
+        }
+
+      if (!hwaccel_nvidia)
+        {
+          callback (stream, g_steal_pointer (&frame), TRUE, user_data);
+          return;
+        }
+
+      unmap_cuda_resources (egl_thread, hwaccel_nvidia, rdp_buffer);
+
+      allocate_buffer_data = g_new0 (AllocateBufferData, 1);
+      allocate_buffer_data->hwaccel_nvidia = hwaccel_nvidia;
+      allocate_buffer_data->rdp_buffer = rdp_buffer;
+
+      realize_buffer_data = g_new0 (RealizeBufferData, 1);
+      realize_buffer_data->hwaccel_nvidia = hwaccel_nvidia;
+      realize_buffer_data->rdp_buffer = rdp_buffer;
+
+      grd_egl_thread_upload (egl_thread,
+                             pbo,
+                             height,
+                             dst_stride,
+                             data_to_upload,
+                             cuda_allocate_buffer,
+                             allocate_buffer_data,
+                             g_free,
+                             cuda_map_resource,
+                             realize_buffer_data,
+                             g_free,
+                             on_framebuffer_ready,
+                             grd_rdp_frame_ref (g_steal_pointer (&frame)),
+                             (GDestroyNotify) grd_rdp_frame_unref);
     }
   else if (buffer->datas[0].type == SPA_DATA_DmaBuf)
     {
       GrdSession *session = GRD_SESSION (stream->session_rdp);
       GrdContext *context = grd_session_get_context (session);
       GrdEglThread *egl_thread = grd_context_get_egl_thread (context);
+      GrdHwAccelNvidia *hwaccel_nvidia = stream->rdp_surface->hwaccel_nvidia;
+      GrdEglThreadImportIface iface;
+      ImportBufferData *import_buffer_data = NULL;
+      GrdRdpBuffer *rdp_buffer;
       int row_width;
       int *fds;
       uint32_t *offsets;
@@ -483,10 +761,17 @@ process_buffer (GrdRdpPipeWireStream     *stream,
       uint64_t *modifiers;
       uint32_t n_planes;
       unsigned int i;
-      uint8_t *dst_data;
+      uint8_t *dst_data = NULL;
 
-      frame->width = width;
-      frame->height = height;
+      frame->buffer = grd_rdp_buffer_pool_acquire (stream->buffer_pool);
+      if (!frame->buffer)
+        {
+          grd_session_rdp_notify_error (stream->session_rdp,
+                                        GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
+          callback (stream, g_steal_pointer (&frame), FALSE, user_data);
+          return;
+        }
+      rdp_buffer = frame->buffer;
 
       row_width = dst_stride / bpp;
 
@@ -503,10 +788,34 @@ process_buffer (GrdRdpPipeWireStream     *stream,
           strides[i] = buffer->datas[i].chunk->stride;
           modifiers[i] = stream->spa_format.modifier;
         }
-      dst_data = g_malloc0 (height * dst_stride);
 
-      frame->data = dst_data;
+      if (!stream->rdp_surface->needs_no_local_data)
+        dst_data = frame->buffer->local_data;
+
+      if (hwaccel_nvidia)
+        {
+          unmap_cuda_resources (egl_thread, hwaccel_nvidia, rdp_buffer);
+
+          iface.allocate = allocate_buffer;
+          iface.realize = realize_buffer;
+
+          import_buffer_data = g_new0 (ImportBufferData, 1);
+          import_buffer_data->allocate.hwaccel_nvidia = hwaccel_nvidia;
+          import_buffer_data->allocate.rdp_buffer = rdp_buffer;
+
+          import_buffer_data->realize.hwaccel_nvidia = hwaccel_nvidia;
+          import_buffer_data->realize.rdp_buffer = rdp_buffer;
+
+          import_buffer_data->rdp_buffer = rdp_buffer;
+        }
+
       grd_egl_thread_download (egl_thread,
+                               rdp_buffer->pbo,
+                               height,
+                               dst_stride,
+                               hwaccel_nvidia ? &iface : NULL,
+                               import_buffer_data,
+                               g_free,
                                dst_data,
                                row_width,
                                drm_format,
@@ -516,40 +825,88 @@ process_buffer (GrdRdpPipeWireStream     *stream,
                                strides,
                                offsets,
                                modifiers,
-                               on_dma_buf_downloaded,
+                               on_framebuffer_ready,
                                grd_rdp_frame_ref (g_steal_pointer (&frame)),
                                (GDestroyNotify) grd_rdp_frame_unref);
     }
   else if (buffer->datas[0].type == SPA_DATA_MemPtr)
     {
+      GrdSession *session = GRD_SESSION (stream->session_rdp);
+      GrdContext *context = grd_session_get_context (session);
+      GrdEglThread *egl_thread = grd_context_get_egl_thread (context);
+      GrdHwAccelNvidia *hwaccel_nvidia = stream->rdp_surface->hwaccel_nvidia;
+      AllocateBufferData *allocate_buffer_data;
+      RealizeBufferData *realize_buffer_data;
+      GrdRdpBuffer *rdp_buffer;
       void *src_data;
+      uint32_t pbo;
+      uint8_t *data_to_upload;
 
       src_data = buffer->datas[0].data;
-      frame->width = width;
-      frame->height = height;
 
-      copy_frame_data (frame,
-                       src_data,
-                       width, height,
-                       dst_stride,
-                       src_stride,
-                       bpp);
+      frame->buffer = grd_rdp_buffer_pool_acquire (stream->buffer_pool);
+      if (!frame->buffer)
+        {
+          grd_session_rdp_notify_error (stream->session_rdp,
+                                        GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
+          callback (stream, g_steal_pointer (&frame), FALSE, user_data);
+          return;
+        }
+      rdp_buffer = frame->buffer;
+      pbo = rdp_buffer->pbo;
 
-      callback (stream, g_steal_pointer (&frame), TRUE, user_data);
+      if (stream->rdp_surface->needs_no_local_data &&
+          src_stride == dst_stride)
+        {
+          data_to_upload = src_data;
+        }
+      else
+        {
+          copy_frame_data (frame,
+                           src_data,
+                           width, height,
+                           dst_stride,
+                           src_stride,
+                           bpp);
+
+          data_to_upload = rdp_buffer->local_data;
+        }
+
+      if (!hwaccel_nvidia)
+        {
+          callback (stream, g_steal_pointer (&frame), TRUE, user_data);
+          return;
+        }
+
+      unmap_cuda_resources (egl_thread, hwaccel_nvidia, rdp_buffer);
+
+      allocate_buffer_data = g_new0 (AllocateBufferData, 1);
+      allocate_buffer_data->hwaccel_nvidia = hwaccel_nvidia;
+      allocate_buffer_data->rdp_buffer = rdp_buffer;
+
+      realize_buffer_data = g_new0 (RealizeBufferData, 1);
+      realize_buffer_data->hwaccel_nvidia = hwaccel_nvidia;
+      realize_buffer_data->rdp_buffer = rdp_buffer;
+
+      grd_egl_thread_upload (egl_thread,
+                             pbo,
+                             height,
+                             dst_stride,
+                             data_to_upload,
+                             cuda_allocate_buffer,
+                             allocate_buffer_data,
+                             g_free,
+                             cuda_map_resource,
+                             realize_buffer_data,
+                             g_free,
+                             on_framebuffer_ready,
+                             grd_rdp_frame_ref (g_steal_pointer (&frame)),
+                             (GDestroyNotify) grd_rdp_frame_unref);
     }
   else
     {
       callback (stream, g_steal_pointer (&frame), TRUE, user_data);
     }
-}
-
-static void
-take_frame_data_from (GrdRdpFrame *src_frame,
-                      GrdRdpFrame *dst_frame)
-{
-  dst_frame->data = g_steal_pointer (&src_frame->data);
-  dst_frame->width = src_frame->width;
-  dst_frame->height = src_frame->height;
 }
 
 static void
@@ -578,6 +935,12 @@ on_frame_ready (GrdRdpPipeWireStream *stream,
 
   g_assert (frame);
 
+  if (frame->has_map)
+    {
+      munmap (frame->map, frame->map_size);
+      frame->has_map = FALSE;
+    }
+
   if (!success)
     goto out;
 
@@ -585,45 +948,82 @@ on_frame_ready (GrdRdpPipeWireStream *stream,
   pending_frame = g_steal_pointer (&stream->pending_frame);
   if (pending_frame)
     {
-      if (!frame->data && pending_frame->data)
-        take_frame_data_from (pending_frame, frame);
+      if (!frame->buffer && pending_frame->buffer)
+        frame->buffer = g_steal_pointer (&pending_frame->buffer);
       if (!frame->has_pointer_data && pending_frame->has_pointer_data)
         take_pointer_data_from (pending_frame, frame);
 
       grd_rdp_frame_unref (pending_frame);
     }
-  stream->pending_frame = frame;
+  stream->pending_frame = g_steal_pointer (&frame);
   g_mutex_unlock (&stream->frame_mutex);
 
 out:
-  pw_stream_queue_buffer (stream->pipewire_stream, buffer);
+  if (buffer)
+    pw_stream_queue_buffer (stream->pipewire_stream, buffer);
 
   g_source_set_ready_time (stream->render_source, 0);
+
+  g_clear_pointer (&frame, grd_rdp_frame_unref);
 }
 
 static void
 on_stream_process (void *user_data)
 {
   GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
+  g_autoptr (GrdRdpFrame) frame = NULL;
+  struct pw_buffer *last_pointer_buffer = NULL;
+  struct pw_buffer *last_frame_buffer = NULL;
   struct pw_buffer *next_buffer;
-  struct pw_buffer *buffer = NULL;
 
   if (stream->destroyed)
     return;
 
-  next_buffer = pw_stream_dequeue_buffer (stream->pipewire_stream);
-  while (next_buffer)
+  while ((next_buffer = pw_stream_dequeue_buffer (stream->pipewire_stream)))
     {
-      buffer = next_buffer;
-      next_buffer = pw_stream_dequeue_buffer (stream->pipewire_stream);
+      if (grd_pipewire_buffer_has_pointer_bitmap (next_buffer))
+        {
+          if (last_pointer_buffer == last_frame_buffer)
+            last_pointer_buffer = NULL;
 
-      if (next_buffer)
-        pw_stream_queue_buffer (stream->pipewire_stream, buffer);
+          if (last_pointer_buffer)
+            pw_stream_queue_buffer (stream->pipewire_stream, last_pointer_buffer);
+          last_pointer_buffer = next_buffer;
+        }
+      if (grd_pipewire_buffer_has_frame_data (next_buffer))
+        {
+          if (last_pointer_buffer == last_frame_buffer)
+            last_frame_buffer = NULL;
+
+          if (last_frame_buffer)
+            pw_stream_queue_buffer (stream->pipewire_stream, last_frame_buffer);
+          last_frame_buffer = next_buffer;
+        }
+
+      if (next_buffer != last_pointer_buffer &&
+          next_buffer != last_frame_buffer)
+        pw_stream_queue_buffer (stream->pipewire_stream, next_buffer);
     }
-  if (!buffer)
+  if (!last_pointer_buffer && !last_frame_buffer)
     return;
 
-  process_buffer (stream, buffer->buffer, on_frame_ready, buffer);
+  frame = grd_rdp_frame_new (stream, on_frame_ready, last_frame_buffer);
+  if (last_pointer_buffer)
+    {
+      process_mouse_pointer_bitmap (stream, last_pointer_buffer->buffer, frame);
+      if (last_pointer_buffer != last_frame_buffer)
+        pw_stream_queue_buffer (stream->pipewire_stream, last_pointer_buffer);
+    }
+
+  if (!last_frame_buffer)
+    {
+      frame->callback (stream, g_steal_pointer (&frame),
+                       TRUE, frame->callback_user_data);
+      return;
+    }
+
+  process_frame_data (stream, last_frame_buffer->buffer,
+                      g_steal_pointer (&frame));
 }
 
 static const struct pw_stream_events stream_events = {
@@ -634,9 +1034,10 @@ static const struct pw_stream_events stream_events = {
 };
 
 static void
-add_common_format_params (struct spa_pod_builder *pod_builder,
-                          enum spa_video_format   spa_format,
-                          uint32_t                refresh_rate)
+add_common_format_params (struct spa_pod_builder     *pod_builder,
+                          enum spa_video_format       spa_format,
+                          const GrdRdpVirtualMonitor *virtual_monitor,
+                          uint32_t                    refresh_rate)
 {
   struct spa_rectangle min_rect;
   struct spa_rectangle max_rect;
@@ -657,11 +1058,25 @@ add_common_format_params (struct spa_pod_builder *pod_builder,
   spa_pod_builder_add (pod_builder,
                        SPA_FORMAT_VIDEO_format,
                        SPA_POD_Id (spa_format), 0);
-  spa_pod_builder_add (pod_builder,
-                       SPA_FORMAT_VIDEO_size,
-                       SPA_POD_CHOICE_RANGE_Rectangle (&min_rect,
-                                                       &min_rect,
-                                                       &max_rect), 0);
+
+  if (virtual_monitor)
+    {
+      struct spa_rectangle virtual_monitor_rect;
+
+      virtual_monitor_rect = SPA_RECTANGLE (virtual_monitor->width,
+                                            virtual_monitor->height);
+      spa_pod_builder_add (pod_builder,
+                           SPA_FORMAT_VIDEO_size,
+                           SPA_POD_Rectangle (&virtual_monitor_rect), 0);
+    }
+  else
+    {
+      spa_pod_builder_add (pod_builder,
+                           SPA_FORMAT_VIDEO_size,
+                           SPA_POD_CHOICE_RANGE_Rectangle (&min_rect,
+                                                           &min_rect,
+                                                           &max_rect), 0);
+    }
   spa_pod_builder_add (pod_builder,
                        SPA_FORMAT_VIDEO_framerate,
                        SPA_POD_Fraction (&SPA_FRACTION (0, 1)), 0);
@@ -673,9 +1088,10 @@ add_common_format_params (struct spa_pod_builder *pod_builder,
 }
 
 static gboolean
-connect_to_stream (GrdRdpPipeWireStream  *stream,
-                   uint32_t               refresh_rate,
-                   GError               **error)
+connect_to_stream (GrdRdpPipeWireStream        *stream,
+                   const GrdRdpVirtualMonitor  *virtual_monitor,
+                   uint32_t                     refresh_rate,
+                   GError                     **error)
 {
   GrdSession *session = GRD_SESSION (stream->session_rdp);
   GrdContext *context = grd_session_get_context (session);
@@ -698,7 +1114,8 @@ connect_to_stream (GrdRdpPipeWireStream  *stream,
   spa_pod_builder_push_object (&pod_builder, &format_frame,
                                SPA_TYPE_OBJECT_Format,
                                SPA_PARAM_EnumFormat);
-  add_common_format_params (&pod_builder, spa_format, refresh_rate);
+  add_common_format_params (&pod_builder, spa_format, virtual_monitor,
+                            refresh_rate);
 
   egl_thread = grd_context_get_egl_thread (context);
   if (egl_thread)
@@ -744,7 +1161,8 @@ connect_to_stream (GrdRdpPipeWireStream  *stream,
       spa_pod_builder_push_object (&pod_builder, &format_frame,
                                    SPA_TYPE_OBJECT_Format,
                                    SPA_PARAM_EnumFormat);
-      add_common_format_params (&pod_builder, spa_format, refresh_rate);
+      add_common_format_params (&pod_builder, spa_format, virtual_monitor,
+                                refresh_rate);
       params[1] = spa_pod_builder_pop (&pod_builder, &format_frame);
     }
 
@@ -792,12 +1210,17 @@ static const struct pw_core_events core_events = {
 };
 
 GrdRdpPipeWireStream *
-grd_rdp_pipewire_stream_new (GrdSessionRdp  *session_rdp,
-                             GMainContext   *render_context,
-                             uint32_t        src_node_id,
-                             uint32_t        refresh_rate,
-                             GError        **error)
+grd_rdp_pipewire_stream_new (GrdSessionRdp               *session_rdp,
+                             GrdHwAccelNvidia            *hwaccel_nvidia,
+                             GMainContext                *render_context,
+                             GrdRdpSurface               *rdp_surface,
+                             const GrdRdpVirtualMonitor  *virtual_monitor,
+                             uint32_t                     src_node_id,
+                             GError                     **error)
 {
+  GrdSession *session = GRD_SESSION (session_rdp);
+  GrdContext *context = grd_session_get_context (session);
+  GrdEglThread *egl_thread = grd_context_get_egl_thread (context);
   g_autoptr (GrdRdpPipeWireStream) stream = NULL;
   GrdPipeWireSource *pipewire_source;
 
@@ -805,6 +1228,7 @@ grd_rdp_pipewire_stream_new (GrdSessionRdp  *session_rdp,
 
   stream = g_object_new (GRD_TYPE_RDP_PIPEWIRE_STREAM, NULL);
   stream->session_rdp = session_rdp;
+  stream->rdp_surface = rdp_surface;
   stream->src_node_id = src_node_id;
 
   create_render_source (stream, render_context);
@@ -840,29 +1264,17 @@ grd_rdp_pipewire_stream_new (GrdSessionRdp  *session_rdp,
                         &core_events,
                         stream);
 
-  if (!connect_to_stream (stream, refresh_rate, error))
+  if (!connect_to_stream (stream, virtual_monitor, rdp_surface->refresh_rate, error))
+    return NULL;
+
+  stream->buffer_pool = grd_rdp_buffer_pool_new (egl_thread,
+                                                 hwaccel_nvidia,
+                                                 rdp_surface->cuda_stream,
+                                                 DEFAULT_BUFFER_POOL_SIZE);
+  if (!stream->buffer_pool)
     return NULL;
 
   return g_steal_pointer (&stream);
-}
-
-typedef struct
-{
-  GMutex mutex;
-  GCond cond;
-  gboolean done;
-} SyncData;
-
-static void
-on_sync_done (gboolean success,
-              gpointer user_data)
-{
-  SyncData *sync_data = user_data;
-
-  g_mutex_lock (&sync_data->mutex);
-  sync_data->done = TRUE;
-  g_cond_signal (&sync_data->cond);
-  g_mutex_unlock (&sync_data->mutex);
 }
 
 static void
@@ -880,22 +1292,7 @@ grd_rdp_pipewire_stream_finalize (GObject *object)
 
   egl_thread = grd_context_get_egl_thread (context);
   if (egl_thread && stream->pipewire_stream)
-    {
-      SyncData sync_data = {};
-
-      g_mutex_init (&sync_data.mutex);
-      g_cond_init (&sync_data.cond);
-
-      grd_egl_thread_sync (egl_thread, on_sync_done, &sync_data, NULL);
-
-      g_mutex_lock (&sync_data.mutex);
-      while (!sync_data.done)
-        g_cond_wait (&sync_data.cond, &sync_data.mutex);
-      g_mutex_unlock (&sync_data.mutex);
-
-      g_cond_clear (&sync_data.cond);
-      g_mutex_clear (&sync_data.mutex);
-    }
+    sync_egl_thread (egl_thread);
 
   /*
    * We can't clear stream->pipewire_stream before destroying it, as the data
@@ -918,7 +1315,11 @@ grd_rdp_pipewire_stream_finalize (GObject *object)
       g_clear_pointer (&stream->render_source, g_source_unref);
     }
 
+  grd_rdp_damage_detector_invalidate_surface (stream->rdp_surface->detector);
   g_clear_pointer (&stream->pending_frame, grd_rdp_frame_unref);
+
+  release_all_buffers (stream);
+  g_clear_object (&stream->buffer_pool);
 
   g_mutex_clear (&stream->frame_mutex);
 
