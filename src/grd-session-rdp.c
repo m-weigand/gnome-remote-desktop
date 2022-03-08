@@ -31,6 +31,10 @@
 #include "grd-clipboard-rdp.h"
 #include "grd-context.h"
 #include "grd-damage-utils.h"
+#include "grd-hwaccel-nvidia.h"
+#include "grd-rdp-buffer.h"
+#include "grd-rdp-damage-detector.h"
+#include "grd-rdp-display-control.h"
 #include "grd-rdp-event-queue.h"
 #include "grd-rdp-graphics-pipeline.h"
 #include "grd-rdp-network-autodetection.h"
@@ -42,10 +46,8 @@
 #include "grd-settings.h"
 #include "grd-stream.h"
 
-#ifdef HAVE_HWACCEL_NVIDIA
-#include "grd-hwaccel-nvidia.h"
-#endif /* HAVE_HWACCEL_NVIDIA */
-
+/* TODO: Set this to 16, as soon as Multimonitor support is implemented */
+#define MAX_MONITOR_COUNT 1
 #define DISCRETE_SCROLL_STEP 10.0
 
 typedef enum _RdpPeerFlag
@@ -120,6 +122,7 @@ struct _GrdSessionRdp
   freerdp_peer *peer;
   GrdRdpSAMFile *sam_file;
   uint32_t rdp_error_info;
+  GrdRdpScreenShareMode screen_share_mode;
 
   GMutex rdp_flags_mutex;
   RdpPeerFlag rdp_flags;
@@ -148,9 +151,7 @@ struct _GrdSessionRdp
   NSCThreadPoolContext nsc_thread_pool_context;
   RawThreadPoolContext raw_thread_pool_context;
 
-#ifdef HAVE_HWACCEL_NVIDIA
   GrdHwAccelNvidia *hwaccel_nvidia;
-#endif /* HAVE_HWACCEL_NVIDIA */
 
   GSource *pending_encode_source;
 
@@ -159,6 +160,10 @@ struct _GrdSessionRdp
 
   GrdRdpPipeWireStream *pipewire_stream;
   GrdStream *stream;
+
+  GSource *update_monitor_layout_source;
+  GMutex monitor_config_mutex;
+  GrdRdpMonitorConfig *monitor_config;
 };
 
 G_DEFINE_TYPE (GrdSessionRdp, grd_session_rdp, GRD_TYPE_SESSION)
@@ -169,8 +174,7 @@ close_session_idle (gpointer user_data);
 static void
 rdp_peer_refresh_region (GrdSessionRdp  *session_rdp,
                          GrdRdpSurface  *rdp_surface,
-                         cairo_region_t *region,
-                         uint8_t        *data);
+                         GrdRdpBuffer   *buffer);
 
 static gboolean
 are_pointer_bitmaps_equal (gconstpointer a,
@@ -205,6 +209,21 @@ unset_rdp_peer_flag (GrdSessionRdp *session_rdp,
   g_mutex_lock (&session_rdp->rdp_flags_mutex);
   session_rdp->rdp_flags &= ~flag;
   g_mutex_unlock (&session_rdp->rdp_flags_mutex);
+}
+
+void
+grd_session_rdp_submit_new_monitor_config (GrdSessionRdp       *session_rdp,
+                                           GrdRdpMonitorConfig *new_monitor_config)
+{
+  g_assert (new_monitor_config);
+
+  g_mutex_lock (&session_rdp->monitor_config_mutex);
+  g_clear_pointer (&session_rdp->monitor_config, grd_rdp_monitor_config_free);
+
+  session_rdp->monitor_config = new_monitor_config;
+  g_mutex_unlock (&session_rdp->monitor_config_mutex);
+
+  g_source_set_ready_time (session_rdp->update_monitor_layout_source, 0);
 }
 
 void
@@ -245,17 +264,15 @@ maybe_resize_graphics_output_buffer (GrdSessionRdp *session_rdp,
   set_rdp_peer_flag (session_rdp, RDP_PEER_ALL_SURFACES_INVALID);
 }
 
-void
-grd_session_rdp_take_buffer (GrdSessionRdp *session_rdp,
-                             void          *data,
-                             uint16_t       width,
-                             uint16_t       height)
+static void
+take_or_encode_frame (GrdSessionRdp *session_rdp,
+                      GrdRdpSurface *rdp_surface,
+                      GrdRdpBuffer  *buffer)
 {
-  GrdRdpSurface *rdp_surface = session_rdp->rdp_surface;
-  uint32_t stride;
-  cairo_region_t *region;
+  uint16_t width = buffer->width;
+  uint16_t height = buffer->height;
 
-  g_clear_pointer (&rdp_surface->pending_frame, g_free);
+  g_clear_pointer (&rdp_surface->pending_framebuffer, grd_rdp_buffer_release);
   maybe_resize_graphics_output_buffer (session_rdp, width, height);
 
   if (is_rdp_peer_flag_set (session_rdp, RDP_PEER_ALL_SURFACES_INVALID))
@@ -274,34 +291,52 @@ grd_session_rdp_take_buffer (GrdSessionRdp *session_rdp,
       rdp_surface->valid = FALSE;
     }
 
-  if (!rdp_surface->valid)
-    g_clear_pointer (&rdp_surface->last_frame, g_free);
+  if (!rdp_surface->valid &&
+      !grd_rdp_damage_detector_invalidate_surface (rdp_surface->detector))
+    {
+      grd_rdp_buffer_release (buffer);
+      grd_session_rdp_notify_error (
+        session_rdp, GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
+      return;
+    }
 
   if (is_rdp_peer_flag_set (session_rdp, RDP_PEER_ACTIVATED) &&
       is_rdp_peer_flag_set (session_rdp, RDP_PEER_OUTPUT_ENABLED) &&
       !is_rdp_peer_flag_set (session_rdp, RDP_PEER_PENDING_GFX_INIT) &&
       !rdp_surface->encoding_suspended)
     {
-      stride = grd_session_rdp_get_stride_for_width (session_rdp,
-                                                     rdp_surface->width);
-      region = grd_get_damage_region ((uint8_t *) data,
-                                      rdp_surface->last_frame,
-                                      rdp_surface->width,
-                                      rdp_surface->height,
-                                      64, 64,
-                                      stride, 4);
-      if (!cairo_region_is_empty (region))
-        rdp_peer_refresh_region (session_rdp, rdp_surface, region, (uint8_t *) data);
+      if (!grd_rdp_damage_detector_submit_new_framebuffer (rdp_surface->detector,
+                                                           buffer))
+        {
+          grd_rdp_buffer_release (buffer);
+          grd_session_rdp_notify_error (
+            session_rdp, GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
+          return;
+        }
 
-      g_clear_pointer (&rdp_surface->last_frame, g_free);
-      rdp_surface->last_frame = data;
-
-      cairo_region_destroy (region);
+      if (grd_rdp_damage_detector_is_region_damaged (rdp_surface->detector))
+        rdp_peer_refresh_region (session_rdp, rdp_surface, buffer);
     }
   else
     {
-      rdp_surface->pending_frame = data;
+      rdp_surface->pending_framebuffer = buffer;
     }
+}
+
+void
+grd_session_rdp_maybe_encode_new_frame (GrdSessionRdp *session_rdp,
+                                        GrdRdpSurface *rdp_surface)
+{
+  g_mutex_lock (&rdp_surface->surface_mutex);
+  if (!rdp_surface->new_framebuffer)
+    {
+      g_mutex_unlock (&rdp_surface->surface_mutex);
+      return;
+    }
+
+  take_or_encode_frame (session_rdp, rdp_surface,
+                        g_steal_pointer (&rdp_surface->new_framebuffer));
+  g_mutex_unlock (&rdp_surface->surface_mutex);
 }
 
 void
@@ -315,12 +350,18 @@ grd_session_rdp_maybe_encode_pending_frame (GrdSessionRdp *session_rdp,
       is_rdp_peer_flag_set (session_rdp, RDP_PEER_PENDING_GFX_INIT))
     return;
 
-  if (!rdp_surface->pending_frame)
-    return;
+  g_mutex_lock (&rdp_surface->surface_mutex);
+  g_assert (!rdp_surface->new_framebuffer);
 
-  grd_session_rdp_take_buffer (session_rdp,
-                               g_steal_pointer (&rdp_surface->pending_frame),
-                               rdp_surface->width, rdp_surface->height);
+  if (!rdp_surface->pending_framebuffer)
+    {
+      g_mutex_unlock (&rdp_surface->surface_mutex);
+      return;
+    }
+
+  take_or_encode_frame (session_rdp, rdp_surface,
+                        g_steal_pointer (&rdp_surface->pending_framebuffer));
+  g_mutex_unlock (&rdp_surface->surface_mutex);
 }
 
 static gboolean
@@ -589,10 +630,21 @@ maybe_queue_close_session_idle (GrdSessionRdp *session_rdp)
 }
 
 void
-grd_session_rdp_notify_error (GrdSessionRdp *session_rdp,
-                              uint32_t       error_info)
+grd_session_rdp_notify_error (GrdSessionRdp      *session_rdp,
+                              GrdSessionRdpError  error_info)
 {
-  session_rdp->rdp_error_info = error_info;
+  switch (error_info)
+    {
+    case GRD_SESSION_RDP_ERROR_NONE:
+      g_assert_not_reached ();
+      break;
+    case GRD_SESSION_RDP_ERROR_BAD_CAPS:
+      session_rdp->rdp_error_info = ERRINFO_BAD_CAPABILITIES;
+      break;
+    case GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED:
+      session_rdp->rdp_error_info = ERRINFO_GRAPHICS_SUBSYSTEM_FAILED;
+      break;
+    }
 
   unset_rdp_peer_flag (session_rdp, RDP_PEER_ACTIVATED);
   maybe_queue_close_session_idle (session_rdp);
@@ -617,7 +669,7 @@ is_view_only (GrdSessionRdp *session_rdp)
 }
 
 static void
-get_current_monitor_config (GrdSessionRdp  *session_rdp,
+get_current_monitor_layout (GrdSessionRdp  *session_rdp,
                             MONITOR_DEF   **monitors,
                             uint32_t       *n_monitors)
 {
@@ -635,8 +687,7 @@ get_current_monitor_config (GrdSessionRdp  *session_rdp,
 static void
 rdp_peer_refresh_gfx (GrdSessionRdp  *session_rdp,
                       GrdRdpSurface  *rdp_surface,
-                      cairo_region_t *region,
-                      uint8_t        *data)
+                      GrdRdpBuffer   *buffer)
 {
   freerdp_peer *peer = session_rdp->peer;
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
@@ -648,7 +699,7 @@ rdp_peer_refresh_gfx (GrdSessionRdp  *session_rdp,
       MONITOR_DEF *monitors;
       uint32_t n_monitors;
 
-      get_current_monitor_config (session_rdp, &monitors, &n_monitors);
+      get_current_monitor_layout (session_rdp, &monitors, &n_monitors);
       grd_rdp_graphics_pipeline_reset_graphics (graphics_pipeline,
                                                 rdp_settings->DesktopWidth,
                                                 rdp_settings->DesktopHeight,
@@ -659,19 +710,20 @@ rdp_peer_refresh_gfx (GrdSessionRdp  *session_rdp,
     }
 
   grd_rdp_graphics_pipeline_refresh_gfx (graphics_pipeline,
-                                         rdp_surface, region, data);
+                                         rdp_surface, buffer);
 }
 
 static void
 rdp_peer_refresh_rfx (GrdSessionRdp  *session_rdp,
                       GrdRdpSurface  *rdp_surface,
                       cairo_region_t *region,
-                      uint8_t        *data)
+                      GrdRdpBuffer   *buffer)
 {
   freerdp_peer *peer = session_rdp->peer;
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
   rdpSettings *rdp_settings = peer->settings;
   rdpUpdate *rdp_update = peer->update;
+  uint8_t *data = buffer->local_data;
   uint32_t src_stride = grd_session_rdp_get_stride_for_width (session_rdp,
                                                               rdp_surface->width);
   SURFACE_BITS_COMMAND cmd = {0};
@@ -813,12 +865,13 @@ static void
 rdp_peer_refresh_nsc (GrdSessionRdp  *session_rdp,
                       GrdRdpSurface  *rdp_surface,
                       cairo_region_t *region,
-                      uint8_t        *data)
+                      GrdRdpBuffer   *buffer)
 {
   freerdp_peer *peer = session_rdp->peer;
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
   rdpSettings *rdp_settings = peer->settings;
   rdpUpdate *rdp_update = peer->update;
+  uint8_t *data = buffer->local_data;
   uint32_t src_stride = grd_session_rdp_get_stride_for_width (session_rdp,
                                                               rdp_surface->width);
   NSCThreadPoolContext *thread_pool_context =
@@ -1055,12 +1108,13 @@ static void
 rdp_peer_refresh_raw (GrdSessionRdp  *session_rdp,
                       GrdRdpSurface  *rdp_surface,
                       cairo_region_t *region,
-                      uint8_t        *data)
+                      GrdRdpBuffer   *buffer)
 {
   freerdp_peer *peer = session_rdp->peer;
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
   rdpSettings *rdp_settings = peer->settings;
   rdpUpdate *rdp_update = peer->update;
+  uint8_t *data = buffer->local_data;
   uint32_t src_stride = grd_session_rdp_get_stride_for_width (session_rdp,
                                                               rdp_surface->width);
   RawThreadPoolContext *thread_pool_context =
@@ -1181,21 +1235,34 @@ rdp_peer_refresh_raw (GrdSessionRdp  *session_rdp,
 static void
 rdp_peer_refresh_region (GrdSessionRdp  *session_rdp,
                          GrdRdpSurface  *rdp_surface,
-                         cairo_region_t *region,
-                         uint8_t        *data)
+                         GrdRdpBuffer   *buffer)
 {
   freerdp_peer *peer = session_rdp->peer;
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
   rdpSettings *rdp_settings = peer->settings;
+  cairo_region_t *region = NULL;
+
+  if (!rdp_settings->SupportGraphicsPipeline)
+    {
+      region = grd_rdp_damage_detector_get_damage_region (rdp_surface->detector);
+      if (!region)
+        {
+          grd_session_rdp_notify_error (
+            session_rdp, GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
+          return;
+        }
+    }
 
   if (rdp_settings->SupportGraphicsPipeline)
-    rdp_peer_refresh_gfx (session_rdp, rdp_surface, region, data);
+    rdp_peer_refresh_gfx (session_rdp, rdp_surface, buffer);
   else if (rdp_settings->RemoteFxCodec)
-    rdp_peer_refresh_rfx (session_rdp, rdp_surface, region, data);
+    rdp_peer_refresh_rfx (session_rdp, rdp_surface, region, buffer);
   else if (rdp_settings->NSCodec)
-    rdp_peer_refresh_nsc (session_rdp, rdp_surface, region, data);
+    rdp_peer_refresh_nsc (session_rdp, rdp_surface, region, buffer);
   else
-    rdp_peer_refresh_raw (session_rdp, rdp_surface, region, data);
+    rdp_peer_refresh_raw (session_rdp, rdp_surface, region, buffer);
+
+  g_clear_pointer (&region, cairo_region_destroy);
 
   ++rdp_peer_context->frame_id;
 }
@@ -1559,7 +1626,38 @@ rdp_suppress_output (rdpContext         *rdp_context,
 static BOOL
 rdp_peer_capabilities (freerdp_peer *peer)
 {
+  RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
+  GrdSessionRdp *session_rdp = rdp_peer_context->session_rdp;
   rdpSettings *rdp_settings = peer->settings;
+
+  if (session_rdp->screen_share_mode == GRD_RDP_SCREEN_SHARE_MODE_EXTEND &&
+      !rdp_settings->SupportGraphicsPipeline)
+    {
+      g_warning ("[RDP] Sessions with client monitor configurations require "
+                 "the Graphics Pipeline, closing connection");
+      return FALSE;
+    }
+
+  if (session_rdp->screen_share_mode == GRD_RDP_SCREEN_SHARE_MODE_EXTEND)
+    {
+      session_rdp->monitor_config =
+        grd_rdp_monitor_config_new_from_client_data (rdp_settings,
+                                                     MAX_MONITOR_COUNT);
+    }
+  else
+    {
+      g_autoptr (GStrvBuilder) connector_builder = NULL;
+      char **connectors;
+
+      session_rdp->monitor_config = g_new0 (GrdRdpMonitorConfig, 1);
+
+      connector_builder = g_strv_builder_new ();
+      g_strv_builder_add (connector_builder, "");
+      connectors = g_strv_builder_end (connector_builder);
+
+      session_rdp->monitor_config->connectors = connectors;
+      session_rdp->monitor_config->monitor_count = 1;
+    }
 
   switch (rdp_settings->ColorDepth)
     {
@@ -1623,7 +1721,13 @@ rdp_peer_post_connect (freerdp_peer *peer)
 
   rdp_settings->PointerCacheSize = MIN (rdp_settings->PointerCacheSize, 100);
 
-  session_rdp->rdp_surface = g_malloc0 (sizeof (GrdRdpSurface));
+  session_rdp->rdp_surface = grd_rdp_surface_new (session_rdp->hwaccel_nvidia);
+  if (!session_rdp->rdp_surface)
+    {
+      g_warning ("[RDP] Failed to create RDP surface");
+      return FALSE;
+    }
+
   session_rdp->rdp_surface->refresh_rate = rdp_settings->SupportGraphicsPipeline ? 60
                                                                                  : 30;
 
@@ -1654,10 +1758,8 @@ rdp_peer_post_connect (freerdp_peer *peer)
                                        rdp_peer_context->network_autodetection,
                                        rdp_peer_context->encode_stream,
                                        rdp_peer_context->rfx_context);
-#ifdef HAVE_HWACCEL_NVIDIA
       grd_rdp_graphics_pipeline_set_hwaccel_nvidia (
         rdp_peer_context->graphics_pipeline, session_rdp->hwaccel_nvidia);
-#endif /* HAVE_HWACCEL_NVIDIA */
     }
 
   grd_session_start (GRD_SESSION (session_rdp));
@@ -1847,6 +1949,9 @@ socket_thread_func (gpointer data)
   uint32_t n_events;
   uint32_t n_freerdp_handles;
 
+  if (session_rdp->hwaccel_nvidia)
+    grd_hwaccel_nvidia_push_cuda_context (session_rdp->hwaccel_nvidia);
+
   WaitForSingleObject (session_rdp->start_event, INFINITE);
 
   peer = session_rdp->peer;
@@ -1888,6 +1993,7 @@ socket_thread_func (gpointer data)
       if (WTSVirtualChannelManagerIsChannelJoined (vcm, "drdynvc"))
         {
           GrdRdpGraphicsPipeline *graphics_pipeline;
+          GrdRdpDisplayControl *display_control;
 
           switch (WTSVirtualChannelManagerGetDrdynvcState (vcm))
             {
@@ -1900,9 +2006,12 @@ socket_thread_func (gpointer data)
               break;
             case DRDYNVC_STATE_READY:
               graphics_pipeline = rdp_peer_context->graphics_pipeline;
+              display_control = rdp_peer_context->display_control;
 
               if (rdp_settings->SupportGraphicsPipeline)
                 grd_rdp_graphics_pipeline_maybe_init (graphics_pipeline);
+
+              grd_rdp_display_control_maybe_init (display_control);
               break;
             }
 
@@ -1919,6 +2028,9 @@ socket_thread_func (gpointer data)
         }
     }
 
+  if (session_rdp->hwaccel_nvidia)
+    grd_hwaccel_nvidia_pop_cuda_context (session_rdp->hwaccel_nvidia);
+
   return NULL;
 }
 
@@ -1927,18 +2039,14 @@ graphics_thread_func (gpointer data)
 {
   GrdSessionRdp *session_rdp = data;
 
-#ifdef HAVE_HWACCEL_NVIDIA
   if (session_rdp->hwaccel_nvidia)
     grd_hwaccel_nvidia_push_cuda_context (session_rdp->hwaccel_nvidia);
-#endif /* HAVE_HWACCEL_NVIDIA */
 
   while (WaitForSingleObject (session_rdp->stop_event, 0) == WAIT_TIMEOUT)
     g_main_context_iteration (session_rdp->graphics_context, TRUE);
 
-#ifdef HAVE_HWACCEL_NVIDIA
   if (session_rdp->hwaccel_nvidia)
     grd_hwaccel_nvidia_pop_cuda_context (session_rdp->hwaccel_nvidia);
-#endif /* HAVE_HWACCEL_NVIDIA */
 
   return NULL;
 }
@@ -1946,10 +2054,7 @@ graphics_thread_func (gpointer data)
 GrdSessionRdp *
 grd_session_rdp_new (GrdRdpServer      *rdp_server,
                      GSocketConnection *connection,
-#ifdef HAVE_HWACCEL_NVIDIA
-                     GrdHwAccelNvidia  *hwaccel_nvidia,
-#endif /* HAVE_HWACCEL_NVIDIA */
-                     int                reserved)
+                     GrdHwAccelNvidia  *hwaccel_nvidia)
 {
   GrdSessionRdp *session_rdp;
   GrdContext *context;
@@ -1979,9 +2084,9 @@ grd_session_rdp_new (GrdRdpServer      *rdp_server,
                               NULL);
 
   session_rdp->connection = g_object_ref (connection);
-#ifdef HAVE_HWACCEL_NVIDIA
   session_rdp->hwaccel_nvidia = hwaccel_nvidia;
-#endif /* HAVE_HWACCEL_NVIDIA */
+
+  session_rdp->screen_share_mode = grd_settings_get_screen_share_mode (settings);
 
   session_rdp->socket_thread = g_thread_new ("RDP socket thread",
                                              socket_thread_func,
@@ -2051,9 +2156,16 @@ grd_session_rdp_stop (GrdSession *session)
   g_clear_object (&session_rdp->pipewire_stream);
 
   g_clear_object (&rdp_peer_context->clipboard_rdp);
+  g_clear_object (&rdp_peer_context->display_control);
   g_clear_object (&rdp_peer_context->graphics_pipeline);
 
   g_clear_pointer (&session_rdp->socket_thread, g_thread_join);
+
+  if (session_rdp->update_monitor_layout_source)
+    {
+      g_source_destroy (session_rdp->update_monitor_layout_source);
+      g_clear_pointer (&session_rdp->update_monitor_layout_source, g_source_unref);
+    }
 
   peer->Close (peer);
   g_clear_object (&session_rdp->connection);
@@ -2079,6 +2191,7 @@ grd_session_rdp_stop (GrdSession *session)
   g_clear_object (&session_rdp->rdp_event_queue);
 
   g_clear_pointer (&session_rdp->rdp_surface, grd_rdp_surface_free);
+  g_clear_pointer (&session_rdp->monitor_config, grd_rdp_monitor_config_free);
 
   g_hash_table_foreach_remove (session_rdp->pointer_cache,
                                clear_pointer_bitmap,
@@ -2106,15 +2219,42 @@ grd_session_rdp_remote_desktop_session_ready (GrdSession *session)
   freerdp_peer *peer = session_rdp->peer;
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
 
-  rdp_peer_context->clipboard_rdp = grd_clipboard_rdp_new (session_rdp,
-                                                           rdp_peer_context->vcm,
-                                                           session_rdp->stop_event);
+  if (WTSVirtualChannelManagerIsChannelJoined (rdp_peer_context->vcm,
+                                               "cliprdr"))
+    {
+      rdp_peer_context->clipboard_rdp =
+        grd_clipboard_rdp_new (session_rdp,
+                               rdp_peer_context->vcm,
+                               session_rdp->stop_event);
+    }
 }
 
 static void
 grd_session_rdp_remote_desktop_session_started (GrdSession *session)
 {
-  grd_session_record_monitor (session, NULL, GRD_SCREEN_CAST_CURSOR_MODE_METADATA);
+  GrdSessionRdp *session_rdp = GRD_SESSION_RDP (session);
+
+  if (session_rdp->monitor_config->is_virtual)
+    g_debug ("[RDP] Remote Desktop session will use virtual monitors");
+  else
+    g_debug ("[RDP] Remote Desktop session will mirror the primary monitor");
+
+  g_assert (session_rdp->monitor_config->monitor_count == 1);
+
+  if (session_rdp->monitor_config->is_virtual)
+    {
+      grd_session_record_virtual (session,
+                                  GRD_SCREEN_CAST_CURSOR_MODE_METADATA,
+                                  TRUE);
+    }
+  else
+    {
+      const char *connector;
+
+      connector = session_rdp->monitor_config->connectors[0];
+      grd_session_record_monitor (session, connector,
+                                  GRD_SCREEN_CAST_CURSOR_MODE_METADATA);
+    }
 }
 
 static void
@@ -2132,16 +2272,20 @@ grd_session_rdp_stream_ready (GrdSession *session,
 {
   GrdSessionRdp *session_rdp = GRD_SESSION_RDP (session);
   GMainContext *graphics_context = session_rdp->graphics_context;
+  GrdRdpSurface *rdp_surface;
   uint32_t pipewire_node_id;
-  uint16_t refresh_rate;
+  GrdRdpVirtualMonitor *virtual_monitor;
   g_autoptr (GError) error = NULL;
 
+  rdp_surface = session_rdp->rdp_surface;
+  virtual_monitor = session_rdp->monitor_config->virtual_monitors;
   pipewire_node_id = grd_stream_get_pipewire_node_id (stream);
-  refresh_rate = session_rdp->rdp_surface->refresh_rate;
   session_rdp->pipewire_stream = grd_rdp_pipewire_stream_new (session_rdp,
+                                                              session_rdp->hwaccel_nvidia,
                                                               graphics_context,
+                                                              rdp_surface,
+                                                              virtual_monitor,
                                                               pipewire_node_id,
-                                                              refresh_rate,
                                                               &error);
   if (!session_rdp->pipewire_stream)
     {
@@ -2153,6 +2297,21 @@ grd_session_rdp_stream_ready (GrdSession *session,
   g_signal_connect (session_rdp->pipewire_stream, "closed",
                     G_CALLBACK (on_pipewire_stream_closed),
                     session_rdp);
+
+  if (session_rdp->screen_share_mode == GRD_RDP_SCREEN_SHARE_MODE_EXTEND)
+    {
+      freerdp_peer *peer = session_rdp->peer;
+      RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
+
+      if (!rdp_peer_context->display_control)
+        {
+          rdp_peer_context->display_control =
+            grd_rdp_display_control_new (session_rdp,
+                                         rdp_peer_context->vcm,
+                                         session_rdp->stop_event,
+                                         MAX_MONITOR_COUNT);
+        }
+    }
 }
 
 static void
@@ -2204,6 +2363,7 @@ grd_session_rdp_finalize (GObject *object)
 {
   GrdSessionRdp *session_rdp = GRD_SESSION_RDP (object);
 
+  g_mutex_clear (&session_rdp->monitor_config_mutex);
   g_mutex_clear (&session_rdp->close_session_mutex);
   g_mutex_clear (&session_rdp->rdp_flags_mutex);
   g_mutex_clear (&session_rdp->pending_jobs_mutex);
@@ -2251,18 +2411,39 @@ encode_pending_frames (gpointer user_data)
 }
 
 static gboolean
-pending_encode_source_dispatch (GSource     *source,
-                                GSourceFunc  callback,
-                                gpointer     user_data)
+update_monitor_layout (gpointer user_data)
+{
+  GrdSessionRdp *session_rdp = user_data;
+  GrdRdpVirtualMonitor *virtual_monitor;
+
+  if (!is_rdp_peer_flag_set (session_rdp, RDP_PEER_ACTIVATED))
+    return G_SOURCE_CONTINUE;
+
+  g_mutex_lock (&session_rdp->monitor_config_mutex);
+  g_assert (session_rdp->monitor_config->monitor_count == 1);
+  g_assert (session_rdp->monitor_config->is_virtual);
+
+  virtual_monitor = session_rdp->monitor_config->virtual_monitors;
+  grd_rdp_pipewire_stream_resize (session_rdp->pipewire_stream,
+                                  virtual_monitor);
+  g_mutex_unlock (&session_rdp->monitor_config_mutex);
+
+  return G_SOURCE_CONTINUE;
+}
+
+static gboolean
+session_source_dispatch (GSource     *source,
+                         GSourceFunc  callback,
+                         gpointer     user_data)
 {
   g_source_set_ready_time (source, -1);
 
   return callback (user_data);
 }
 
-static GSourceFuncs pending_encode_source_funcs =
+static GSourceFuncs session_source_funcs =
 {
-  .dispatch = pending_encode_source_dispatch,
+  .dispatch = session_source_dispatch,
 };
 
 static void
@@ -2279,18 +2460,26 @@ grd_session_rdp_init (GrdSessionRdp *session_rdp)
   g_mutex_init (&session_rdp->pending_jobs_mutex);
   g_mutex_init (&session_rdp->rdp_flags_mutex);
   g_mutex_init (&session_rdp->close_session_mutex);
+  g_mutex_init (&session_rdp->monitor_config_mutex);
 
   session_rdp->rdp_event_queue = grd_rdp_event_queue_new (session_rdp);
 
   session_rdp->graphics_context = g_main_context_new ();
 
-  session_rdp->pending_encode_source = g_source_new (&pending_encode_source_funcs,
+  session_rdp->pending_encode_source = g_source_new (&session_source_funcs,
                                                      sizeof (GSource));
   g_source_set_callback (session_rdp->pending_encode_source,
                          encode_pending_frames, session_rdp, NULL);
   g_source_set_ready_time (session_rdp->pending_encode_source, -1);
   g_source_attach (session_rdp->pending_encode_source,
                    session_rdp->graphics_context);
+
+  session_rdp->update_monitor_layout_source = g_source_new (&session_source_funcs,
+                                                            sizeof (GSource));
+  g_source_set_callback (session_rdp->update_monitor_layout_source,
+                         update_monitor_layout, session_rdp, NULL);
+  g_source_set_ready_time (session_rdp->update_monitor_layout_source, -1);
+  g_source_attach (session_rdp->update_monitor_layout_source, NULL);
 }
 
 static void

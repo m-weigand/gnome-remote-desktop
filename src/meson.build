@@ -32,6 +32,8 @@ daemon_sources = files([
   'grd-prompt.h',
   'grd-session.c',
   'grd-session.h',
+  'grd-schemas.c',
+  'grd-schemas.h',
   'grd-settings.c',
   'grd-settings.h',
   'grd-stream.c',
@@ -45,17 +47,35 @@ if have_rdp
   daemon_sources += files([
     'grd-clipboard-rdp.c',
     'grd-clipboard-rdp.h',
+    'grd-hwaccel-nvidia.c',
+    'grd-hwaccel-nvidia.h',
+    'grd-rdp-buffer.c',
+    'grd-rdp-buffer.h',
+    'grd-rdp-buffer-pool.c',
+    'grd-rdp-buffer-pool.h',
+    'grd-rdp-damage-detector.c',
+    'grd-rdp-damage-detector.h',
+    'grd-rdp-damage-detector-cuda.c',
+    'grd-rdp-damage-detector-cuda.h',
+    'grd-rdp-damage-detector-memcmp.c',
+    'grd-rdp-damage-detector-memcmp.h',
+    'grd-rdp-display-control.c',
+    'grd-rdp-display-control.h',
     'grd-rdp-event-queue.c',
     'grd-rdp-event-queue.h',
     'grd-rdp-frame-info.h',
     'grd-rdp-fuse-clipboard.c',
     'grd-rdp-fuse-clipboard.h',
+    'grd-rdp-gfx-frame-controller.c',
+    'grd-rdp-gfx-frame-controller.h',
     'grd-rdp-gfx-frame-log.c',
     'grd-rdp-gfx-frame-log.h',
     'grd-rdp-gfx-surface.c',
     'grd-rdp-gfx-surface.h',
     'grd-rdp-graphics-pipeline.c',
     'grd-rdp-graphics-pipeline.h',
+    'grd-rdp-monitor-config.c',
+    'grd-rdp-monitor-config.h',
     'grd-rdp-network-autodetection.c',
     'grd-rdp-network-autodetection.h',
     'grd-rdp-pipewire-stream.c',
@@ -72,6 +92,8 @@ if have_rdp
   ])
 
   deps += [
+    cuda_dep,
+    dl_dep,
     freerdp_dep,
     freerdp_client_dep,
     freerdp_server_dep,
@@ -79,18 +101,6 @@ if have_rdp
     winpr_dep,
     xkbcommon_dep,
   ]
-
-  if have_hwaccel_nvidia
-    daemon_sources += files([
-      'grd-hwaccel-nvidia.c',
-      'grd-hwaccel-nvidia.h',
-    ])
-
-    deps += [
-      cuda_dep,
-      dl_dep,
-    ]
-  endif
 endif
 
 if have_vnc
@@ -129,6 +139,12 @@ control_sources = ([
   'grd-control.c'
 ])
 
+ctl_sources = ([
+  'grd-ctl.c',
+  'grd-schemas.c',
+  'grd-schemas.h',
+])
+
 executable('gnome-remote-desktop-daemon',
            daemon_sources,
            dependencies: deps,
@@ -141,6 +157,12 @@ executable('gnome-remote-desktop-control',
            dependencies: [glib_dep, gio_dep],
            include_directories: [configinc],
            install : false)
+
+executable('grdctl',
+           ctl_sources,
+           dependencies: [glib_dep, gio_dep, libsecret_dep],
+           include_directories: [configinc],
+           install: true)
 
 service_config = configuration_data()
 service_config.set('libexecdir', libexecdir)

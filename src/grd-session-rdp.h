@@ -23,6 +23,7 @@
 #include <gio/gio.h>
 #include <glib-object.h>
 
+#include "grd-rdp-monitor-config.h"
 #include "grd-session.h"
 #include "grd-types.h"
 
@@ -32,15 +33,22 @@ G_DECLARE_FINAL_TYPE (GrdSessionRdp,
                       GRD, SESSION_RDP,
                       GrdSession)
 
+typedef enum _GrdSessionRdpError
+{
+  GRD_SESSION_RDP_ERROR_NONE,
+  GRD_SESSION_RDP_ERROR_BAD_CAPS,
+  GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED,
+} GrdSessionRdpError;
+
 GrdSessionRdp *grd_session_rdp_new (GrdRdpServer      *rdp_server,
                                     GSocketConnection *connection,
-#ifdef HAVE_HWACCEL_NVIDIA
-                                    GrdHwAccelNvidia  *hwaccel_nvidia,
-#endif /* HAVE_HWACCEL_NVIDIA */
-                                    int                reserved);
+                                    GrdHwAccelNvidia  *hwaccel_nvidia);
 
-void grd_session_rdp_notify_error (GrdSessionRdp *session_rdp,
-                                   uint32_t       error_info);
+void grd_session_rdp_notify_error (GrdSessionRdp      *session_rdp,
+                                   GrdSessionRdpError  error_info);
+
+void grd_session_rdp_submit_new_monitor_config (GrdSessionRdp       *session_rdp,
+                                                GrdRdpMonitorConfig *new_monitor_config);
 
 void grd_session_rdp_notify_graphics_pipeline_reset (GrdSessionRdp *session_rdp);
 
@@ -49,10 +57,8 @@ void grd_session_rdp_notify_graphics_pipeline_ready (GrdSessionRdp *session_rdp)
 int grd_session_rdp_get_stride_for_width (GrdSessionRdp *session_rdp,
                                           int            width);
 
-void grd_session_rdp_take_buffer (GrdSessionRdp *session_rdp,
-                                  void          *data,
-                                  uint16_t       width,
-                                  uint16_t       height);
+void grd_session_rdp_maybe_encode_new_frame (GrdSessionRdp *session_rdp,
+                                             GrdRdpSurface *rdp_surface);
 
 void grd_session_rdp_maybe_encode_pending_frame (GrdSessionRdp *session_rdp,
                                                  GrdRdpSurface *rdp_surface);
