@@ -1,0 +1,26 @@
+From: Jeremy Bicha <jeremy.bicha@canonical.com>
+Date: Mon, 11 Apr 2022 17:20:35 -0400
+Subject: systemd: Autostart as part of gnome-session.target
+
+Needed after this change:
+https://gitlab.gnome.org/GNOME/gnome-settings-daemon/-/commit/58add519
+
+Thanks: vtq
+
+Closes: https://gitlab.gnome.org/GNOME/gnome-remote-desktop/-/issues/93
+(cherry picked from commit 7f4ef31fd380dffc108e5c7f77c81fbaa271ec7b)
+---
+ src/gnome-remote-desktop.service.in | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/gnome-remote-desktop.service.in b/src/gnome-remote-desktop.service.in
+index 8dc41ad..6c0dcfc 100644
+--- a/src/gnome-remote-desktop.service.in
++++ b/src/gnome-remote-desktop.service.in
+@@ -6,3 +6,6 @@ Type=dbus
+ BusName=org.gnome.RemoteDesktop
+ ExecStart=@libexecdir@/gnome-remote-desktop-daemon
+ Restart=on-failure
++
++[Install]
++WantedBy=gnome-session.target
