@@ -1,3 +1,11 @@
+gnome-remote-desktop (42.0-3) unstable; urgency=medium
+
+  * Team upload
+  * Add a Breaks to get -control-center and -remote-desktop upgraded together
+  * Release to unstable
+
+ -- Simon McVittie <smcv@debian.org>  Wed, 13 Apr 2022 16:49:06 +0100
+
 gnome-remote-desktop (42.0-2) experimental; urgency=medium
 
   * Cherry-pick commit to autostart as part of gnome-session.target
