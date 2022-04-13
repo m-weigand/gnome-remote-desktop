@@ -6,7 +6,7 @@ Source: gnome-remote-desktop
 Section: gnome
 Priority: optional
 Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
-Uploaders: Jeremy Bicha <jeremy.bicha@canonical.com>, Laurent Bigonville <bigon@debian.org>
+Uploaders: Jeremy Bicha <jbicha@ubuntu.com>, Laurent Bigonville <bigon@debian.org>
 Build-Depends: debhelper-compat (= 13),
                dh-sequence-gnome,
                freerdp2-dev (>= 2.5.0),
@@ -38,6 +38,7 @@ Depends: ${misc:Depends},
          gnome-shell (>= 3.37.92-2~) | budgie-desktop (>= 10.5.2),
          pipewire (>= 0.3.0),
          pipewire-media-session | wireplumber,
+Breaks: gnome-control-center (<< 1:42)
 Description: Remote desktop daemon for GNOME using PipeWire
  This daemon enables GNOME to offer remote desktop sharing using VNC
  with PipeWire. It supports both GNOME on X and GNOME on Wayland.
