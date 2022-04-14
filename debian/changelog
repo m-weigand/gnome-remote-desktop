@@ -1,4 +1,4 @@
-gnome-remote-desktop (42.0-4) UNRELEASED; urgency=medium
+gnome-remote-desktop (42.0-4) unstable; urgency=medium
 
   * debian/patches: Ensure support with nvidia drivers >= 495
     the NVIDIA >= 495 drivers apparently allows creating and importing dma-bufs
@@ -9,7 +9,7 @@ gnome-remote-desktop (42.0-4) UNRELEASED; urgency=medium
     patch g-r-d always assumes, that dma-bufs are unavailable with the NVIDIA
     driver.
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Thu, 14 Apr 2022 12:58:22 +0200
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Thu, 14 Apr 2022 12:59:26 +0200
 
 gnome-remote-desktop (42.0-3) unstable; urgency=medium
 
