@@ -1,1 +1,6 @@
 systemd-Autostart-as-part-of-gnome-session.target.patch
+session-rdp-Fix-typo-in-warning-message.patch
+session-rdp-Only-show-NSC-disable-message-when-NSC-is-ava.patch
+egl-thread-Add-API-to-retrieve-the-dma-buf-availability.patch
+rdp-pipewire-stream-Only-advertise-dma-buf-support-when-a.patch
+vnc-pipewire-stream-Only-advertise-dma-buf-support-when-a.patch

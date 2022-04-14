@@ -1,0 +1,21 @@
+From: Pascal Nowack <Pascal.Nowack@gmx.de>
+Date: Tue, 12 Apr 2022 08:34:14 +0200
+Subject: session-rdp: Fix typo in warning message
+
+---
+ src/grd-session-rdp.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/grd-session-rdp.c b/src/grd-session-rdp.c
+index 67d0327..a27477b 100644
+--- a/src/grd-session-rdp.c
++++ b/src/grd-session-rdp.c
+@@ -1714,7 +1714,7 @@ rdp_peer_post_connect (freerdp_peer *peer)
+   if (!rdp_settings->SupportGraphicsPipeline &&
+       !rdp_settings->RemoteFxCodec)
+     {
+-      g_warning ("[RDP] Client does neither support RFX nor GFX. This is will "
++      g_warning ("[RDP] Client does neither support RFX nor GFX. This will "
+                  "result in heavy performance and heavy bandwidth usage "
+                  "regressions. The legacy path is deprecated!");
+     }
