@@ -37,8 +37,6 @@ struct _GrdContext
 {
   GObject parent;
 
-  GMainContext *main_context;
-
   GrdDBusRemoteDesktop *remote_desktop_proxy;
   GrdDBusScreenCast *screen_cast_proxy;
 
@@ -79,12 +77,6 @@ grd_context_set_screen_cast_proxy (GrdContext        *context,
   context->screen_cast_proxy = proxy;
 }
 
-GMainContext *
-grd_context_get_main_context (GrdContext *context)
-{
-  return context->main_context;
-}
-
 GrdSettings *
 grd_context_get_settings (GrdContext *context)
 {
@@ -101,6 +93,19 @@ GrdDebugFlags
 grd_context_get_debug_flags (GrdContext *context)
 {
   return context->debug_flags;
+}
+
+void
+grd_context_notify_daemon_ready (GrdContext *context)
+{
+  g_autoptr (GError) error = NULL;
+
+  if (context->egl_thread)
+    return;
+
+  context->egl_thread = grd_egl_thread_new (&error);
+  if (!context->egl_thread)
+    g_debug ("Failed to create EGL thread: %s", error->message);
 }
 
 static void
@@ -134,17 +139,9 @@ grd_context_finalize (GObject *object)
 static void
 grd_context_init (GrdContext *context)
 {
-  g_autoptr (GError) error = NULL;
-
-  context->main_context = g_main_context_default ();
-
   init_debug_flags (context);
 
   context->settings = g_object_new (GRD_TYPE_SETTINGS, NULL);
-
-  context->egl_thread = grd_egl_thread_new (&error);
-  if (!context->egl_thread)
-    g_debug ("Failed to create EGL thread: %s", error->message);
 }
 
 static void
