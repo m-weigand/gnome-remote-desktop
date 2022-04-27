@@ -31,6 +31,7 @@ Package: gnome-remote-desktop
 Architecture: linux-any
 Depends: ${misc:Depends},
          ${shlibs:Depends},
+         fusermount3,
          mutter (>= 42.1),
          pipewire (>= 0.3.0),
          pipewire-media-session | wireplumber,
