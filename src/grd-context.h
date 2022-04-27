@@ -49,14 +49,12 @@ void grd_context_set_remote_desktop_proxy (GrdContext           *context,
 void grd_context_set_screen_cast_proxy (GrdContext        *context,
                                         GrdDBusScreenCast *proxy);
 
-GrdPipeWireStreamMonitor *grd_context_get_pipewire_stream_monitor (GrdContext *context);
-
-GMainContext *grd_context_get_main_context (GrdContext *context);
-
 GrdSettings * grd_context_get_settings (GrdContext *context);
 
 GrdEglThread * grd_context_get_egl_thread (GrdContext *context);
 
 GrdDebugFlags grd_context_get_debug_flags (GrdContext *context);
+
+void grd_context_notify_daemon_ready (GrdContext *context);
 
 #endif /* GRD_CONTEXT_H */
