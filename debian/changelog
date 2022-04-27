@@ -1,3 +1,9 @@
+gnome-remote-desktop (42.1.1-1) UNRELEASED; urgency=medium
+
+  * New upstream release (LP: #1970662)
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 27 Apr 2022 15:59:37 -0400
+
 gnome-remote-desktop (42.0-4) unstable; urgency=medium
 
   * debian/patches: Ensure support with nvidia drivers >= 495
