@@ -31,7 +31,7 @@ Package: gnome-remote-desktop
 Architecture: linux-any
 Depends: ${misc:Depends},
          ${shlibs:Depends},
-         gnome-shell (>= 3.37.92-2~) | budgie-desktop (>= 10.5.2),
+         mutter (>= 42.1),
          pipewire (>= 0.3.0),
          pipewire-media-session | wireplumber,
 Breaks: gnome-control-center (<< 1:42)
