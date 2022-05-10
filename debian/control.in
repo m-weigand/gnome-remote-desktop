@@ -32,7 +32,7 @@ Architecture: linux-any
 Depends: ${misc:Depends},
          ${shlibs:Depends},
          fuse3,
-         mutter (>= 42.1),
+         libmutter-10-0 (>= 42.1),
          pipewire (>= 0.3.0),
          pipewire-media-session | wireplumber,
 Breaks: gnome-control-center (<< 1:42)
