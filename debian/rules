@@ -8,3 +8,7 @@ export DEB_LDFLAGS_MAINT_APPEND = -Wl,-O1 -Wl,-z,defs
 
 override_dh_auto_test:
 	dh_auto_test || true
+
+# https://launchpad.net/bugs/1973028
+override_dh_installsystemduser:
+	dh_installsystemduser --no-enable
