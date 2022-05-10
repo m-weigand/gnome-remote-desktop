@@ -1,8 +1,14 @@
-gnome-remote-desktop (42.1.1-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (42.1.1-1) unstable; urgency=medium
 
   * New upstream release (LP: #1970662)
+    - Fixes black screen with virtio on qemu (LP: #1971195)
+  * Drop all patches: applied in new release
+  * Depend on libmutter instead of gnome-shell | budgie-desktop
+    - This is a more accurate dependency
+  * Require libmutter 42.1 for Nvidia fixes
+  * Depend on fuse3 (Closes: #998846) (LP: #1970411)
 
- -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 27 Apr 2022 15:59:37 -0400
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Tue, 10 May 2022 14:50:48 -0400
 
 gnome-remote-desktop (42.0-4) unstable; urgency=medium
 
