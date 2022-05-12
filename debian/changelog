@@ -1,9 +1,11 @@
-gnome-remote-desktop (42.1.1-2) UNRELEASED; urgency=medium
+gnome-remote-desktop (42.1.1-2) unstable; urgency=high
 
   * Don't automatically enable the systemd user service (LP: #1973028)
-  * Add maintscript to remove the automatic enabling of the user service
+  * Add postinst to remove the automatic enabling of the user service
+  * debian/control: Lower mutter dependency so that these fixes reach
+    Testing sooner
 
- -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 11 May 2022 14:35:48 -0400
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Thu, 12 May 2022 15:19:46 -0400
 
 gnome-remote-desktop (42.1.1-1) unstable; urgency=medium
 
