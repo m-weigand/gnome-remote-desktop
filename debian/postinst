@@ -1,0 +1,16 @@
+#! /bin/sh
+set -e
+
+case "$1" in
+	configure)
+		# Disable the job by default for users updating from a buggy version
+		if dpkg --compare-versions "$2" lt-nl 42.1.1-2~; then
+			if deb-systemd-helper --user --quiet was-enabled 'gnome-remote-desktop.service'; then
+				printf "Disable user unit that shouldn't have been auto enabled\n"
+				deb-systemd-helper --user disable 'gnome-remote-desktop.service' >/dev/null || true
+			fi
+		fi
+        ;;
+esac
+
+#DEBHELPER#
