@@ -25,15 +25,25 @@
 #include "grd-rdp-private.h"
 
 #define BW_MEASURE_SEQUENCE_NUMBER 0
+#define MIN_NW_CHAR_RES_INTERVAL_US G_USEC_PER_SEC
 #define PING_INTERVAL_HIGH_MS 70
 #define PING_INTERVAL_LOW_MS 700
 #define RTT_AVG_PERIOD_US (500 * 1000)
 
 typedef enum _PingInterval
 {
+  PING_INTERVAL_NONE,
   PING_INTERVAL_HIGH,
   PING_INTERVAL_LOW,
 } PingInterval;
+
+typedef enum _BwMeasureState
+{
+  BW_MEASURE_STATE_NONE,
+  BW_MEASURE_STATE_PENDING_STOP,
+  BW_MEASURE_STATE_QUEUED_STOP,
+  BW_MEASURE_STATE_PENDING_RESULTS,
+} BwMeasureState;
 
 typedef struct _PingInfo
 {
@@ -68,6 +78,13 @@ struct _GrdRdpNetworkAutodetection
   GQueue *round_trip_times;
   PingInterval ping_interval;
 
+  GMutex bw_measure_mutex;
+  uint32_t measured_bandwidth;
+  BwMeasureState bw_measure_state;
+  HANDLE bw_measure_stop_event;
+
+  int64_t last_nw_char_res_notification_us;
+
   uint16_t next_sequence_number;
 };
 
@@ -99,6 +116,16 @@ is_active_high_nec_rtt_consumer (GrdRdpNetworkAutodetection    *network_autodete
   if (!has_rtt_consumer (network_autodetection, rtt_consumer))
     return FALSE;
   if (network_autodetection->rtt_high_nec_consumers & rtt_consumer)
+    return TRUE;
+
+  return FALSE;
+}
+
+static gboolean
+has_active_high_nec_rtt_consumers (GrdRdpNetworkAutodetection *network_autodetection)
+{
+  if (is_active_high_nec_rtt_consumer (network_autodetection,
+                                       GRD_RDP_NW_AUTODETECT_RTT_CONSUMER_RDPGFX))
     return TRUE;
 
   return FALSE;
@@ -146,30 +173,26 @@ emit_ping (gpointer user_data)
 static void
 update_ping_source (GrdRdpNetworkAutodetection *network_autodetection)
 {
-  GrdRdpNwAutodetectRTTConsumer active_high_nec_rtt_consumers;
   PingInterval new_ping_interval_type;
   uint32_t ping_interval_ms;
 
-  active_high_nec_rtt_consumers = GRD_RDP_NW_AUTODETECT_RTT_CONSUMER_NONE;
-  if (is_active_high_nec_rtt_consumer (
-        network_autodetection, GRD_RDP_NW_AUTODETECT_RTT_CONSUMER_RDPGFX))
-    active_high_nec_rtt_consumers |= GRD_RDP_NW_AUTODETECT_RTT_CONSUMER_RDPGFX;
-
-  if (active_high_nec_rtt_consumers)
+  if (network_autodetection->rtt_consumers == GRD_RDP_NW_AUTODETECT_RTT_CONSUMER_NONE)
+    new_ping_interval_type = PING_INTERVAL_NONE;
+  else if (has_active_high_nec_rtt_consumers (network_autodetection))
     new_ping_interval_type = PING_INTERVAL_HIGH;
   else
     new_ping_interval_type = PING_INTERVAL_LOW;
 
-  if ((network_autodetection->rtt_consumers == GRD_RDP_NW_AUTODETECT_RTT_CONSUMER_NONE ||
-       network_autodetection->ping_interval != new_ping_interval_type) &&
+  if (network_autodetection->ping_interval != new_ping_interval_type &&
       network_autodetection->ping_source)
     {
       g_source_destroy (network_autodetection->ping_source);
       g_clear_pointer (&network_autodetection->ping_source, g_source_unref);
     }
 
-  if (network_autodetection->rtt_consumers == GRD_RDP_NW_AUTODETECT_RTT_CONSUMER_NONE ||
-      network_autodetection->ping_interval == new_ping_interval_type)
+  network_autodetection->ping_interval = new_ping_interval_type;
+
+  if (network_autodetection->ping_interval == PING_INTERVAL_NONE)
     return;
 
   g_assert (!network_autodetection->ping_source);
@@ -177,6 +200,8 @@ update_ping_source (GrdRdpNetworkAutodetection *network_autodetection)
 
   switch (new_ping_interval_type)
     {
+    case PING_INTERVAL_NONE:
+      g_assert_not_reached ();
     case PING_INTERVAL_HIGH:
       ping_interval_ms = PING_INTERVAL_HIGH_MS;
       break;
@@ -189,7 +214,6 @@ update_ping_source (GrdRdpNetworkAutodetection *network_autodetection)
   g_source_set_callback (network_autodetection->ping_source, emit_ping,
                          network_autodetection, NULL);
   g_source_attach (network_autodetection->ping_source, NULL);
-  network_autodetection->ping_interval = new_ping_interval_type;
 }
 
 void
@@ -199,8 +223,7 @@ grd_rdp_network_autodetection_ensure_rtt_consumer (GrdRdpNetworkAutodetection   
   g_assert (rtt_consumer != GRD_RDP_NW_AUTODETECT_RTT_CONSUMER_NONE);
 
   g_mutex_lock (&network_autodetection->consumer_mutex);
-  if (!has_rtt_consumer (network_autodetection, rtt_consumer))
-    network_autodetection->rtt_consumers |= rtt_consumer;
+  network_autodetection->rtt_consumers |= rtt_consumer;
 
   update_ping_source (network_autodetection);
   g_mutex_unlock (&network_autodetection->consumer_mutex);
@@ -210,6 +233,8 @@ void
 grd_rdp_network_autodetection_remove_rtt_consumer (GrdRdpNetworkAutodetection    *network_autodetection,
                                                    GrdRdpNwAutodetectRTTConsumer  rtt_consumer)
 {
+  g_assert (rtt_consumer != GRD_RDP_NW_AUTODETECT_RTT_CONSUMER_NONE);
+
   g_mutex_lock (&network_autodetection->consumer_mutex);
   network_autodetection->rtt_consumers &= ~rtt_consumer;
 
@@ -255,6 +280,59 @@ grd_rdp_network_autodetection_set_rtt_consumer_necessity (GrdRdpNetworkAutodetec
   g_mutex_unlock (&network_autodetection->consumer_mutex);
 }
 
+gboolean
+grd_rdp_network_autodetection_try_bw_measure_start (GrdRdpNetworkAutodetection *network_autodetection)
+{
+  rdpAutoDetect *rdp_autodetect = network_autodetection->rdp_autodetect;
+  g_autoptr (GMutexLocker) locker = NULL;
+
+  locker = g_mutex_locker_new (&network_autodetection->bw_measure_mutex);
+  if (network_autodetection->bw_measure_state != BW_MEASURE_STATE_NONE)
+    return FALSE;
+
+  network_autodetection->bw_measure_state = BW_MEASURE_STATE_PENDING_STOP;
+  g_clear_pointer (&locker, g_mutex_locker_free);
+
+  rdp_autodetect->BandwidthMeasureStart (network_autodetection->rdp_context,
+                                         BW_MEASURE_SEQUENCE_NUMBER);
+
+  return TRUE;
+}
+
+void
+grd_rdp_network_autodetection_bw_measure_stop (GrdRdpNetworkAutodetection *network_autodetection)
+{
+  rdpAutoDetect *rdp_autodetect = network_autodetection->rdp_autodetect;
+
+  g_mutex_lock (&network_autodetection->bw_measure_mutex);
+  g_assert (network_autodetection->bw_measure_state == BW_MEASURE_STATE_PENDING_STOP ||
+            network_autodetection->bw_measure_state == BW_MEASURE_STATE_QUEUED_STOP);
+
+  ResetEvent (network_autodetection->bw_measure_stop_event);
+  network_autodetection->bw_measure_state = BW_MEASURE_STATE_PENDING_RESULTS;
+  g_mutex_unlock (&network_autodetection->bw_measure_mutex);
+
+  rdp_autodetect->BandwidthMeasureStop (network_autodetection->rdp_context,
+                                        BW_MEASURE_SEQUENCE_NUMBER);
+}
+
+void
+grd_rdp_network_autodetection_queue_bw_measure_stop (GrdRdpNetworkAutodetection *network_autodetection)
+{
+  g_mutex_lock (&network_autodetection->bw_measure_mutex);
+  g_assert (network_autodetection->bw_measure_state == BW_MEASURE_STATE_PENDING_STOP);
+
+  SetEvent (network_autodetection->bw_measure_stop_event);
+  network_autodetection->bw_measure_state = BW_MEASURE_STATE_QUEUED_STOP;
+  g_mutex_unlock (&network_autodetection->bw_measure_mutex);
+}
+
+HANDLE
+grd_rdp_network_autodetection_get_bw_measure_stop_event_handle (GrdRdpNetworkAutodetection *network_autodetection)
+{
+  return network_autodetection->bw_measure_stop_event;
+}
+
 static void
 track_round_trip_time (GrdRdpNetworkAutodetection *network_autodetection,
                        int64_t                     ping_time_us,
@@ -281,27 +359,75 @@ remove_old_round_trip_times (GrdRdpNetworkAutodetection *network_autodetection)
     g_free (g_queue_pop_head (network_autodetection->round_trip_times));
 }
 
-static int64_t
-get_current_avg_round_trip_time_us (GrdRdpNetworkAutodetection *network_autodetection)
+static void
+update_round_trip_time_values (GrdRdpNetworkAutodetection *network_autodetection,
+                               int64_t                    *base_round_trip_time_us,
+                               int64_t                    *avg_round_trip_time_us)
 {
   int64_t sum_round_trip_times_us = 0;
   uint32_t total_round_trip_times;
   RTTInfo *rtt_info;
   GQueue *tmp;
 
+  *base_round_trip_time_us = 0;
+  *avg_round_trip_time_us = 0;
+
   remove_old_round_trip_times (network_autodetection);
-  if (!g_queue_get_length (network_autodetection->round_trip_times))
-    return 0;
+  if (g_queue_get_length (network_autodetection->round_trip_times) == 0)
+    return;
 
   tmp = g_queue_copy (network_autodetection->round_trip_times);
   total_round_trip_times = g_queue_get_length (tmp);
+  g_assert (total_round_trip_times > 0);
+
+  *base_round_trip_time_us = INT64_MAX;
 
   while ((rtt_info = g_queue_pop_head (tmp)))
-    sum_round_trip_times_us += rtt_info->round_trip_time_us;
+    {
+      *base_round_trip_time_us = MIN (*base_round_trip_time_us,
+                                      rtt_info->round_trip_time_us);
+      sum_round_trip_times_us += rtt_info->round_trip_time_us;
+    }
 
   g_queue_free (tmp);
 
-  return sum_round_trip_times_us / total_round_trip_times;
+  *avg_round_trip_time_us = sum_round_trip_times_us / total_round_trip_times;
+}
+
+static void
+maybe_send_network_characteristics_results (GrdRdpNetworkAutodetection *network_autodetection,
+                                            uint32_t                    base_round_trip_time_ms,
+                                            uint32_t                    avg_round_trip_time_ms)
+{
+  rdpContext *rdp_context = network_autodetection->rdp_context;
+  rdpAutoDetect *rdp_autodetect = network_autodetection->rdp_autodetect;
+  int64_t last_notification_us;
+  int64_t current_time_us;
+  uint16_t sequence_number;
+
+  if (network_autodetection->measured_bandwidth <= 0)
+    return;
+
+  if (g_queue_get_length (network_autodetection->round_trip_times) == 0)
+    return;
+
+  current_time_us = g_get_monotonic_time ();
+  last_notification_us = network_autodetection->last_nw_char_res_notification_us;
+
+  if (current_time_us - last_notification_us < MIN_NW_CHAR_RES_INTERVAL_US)
+    return;
+
+  rdp_autodetect->netCharBandwidth = network_autodetection->measured_bandwidth;
+  rdp_autodetect->netCharBaseRTT = base_round_trip_time_ms;
+  rdp_autodetect->netCharAverageRTT = avg_round_trip_time_ms;
+
+  g_mutex_lock (&network_autodetection->sequence_mutex);
+  sequence_number = get_next_free_sequence_number (network_autodetection);
+  g_mutex_unlock (&network_autodetection->sequence_mutex);
+
+  rdp_autodetect->NetworkCharacteristicsResult (rdp_context, sequence_number);
+
+  network_autodetection->last_nw_char_res_notification_us = current_time_us;
 }
 
 static BOOL
@@ -310,8 +436,10 @@ autodetect_rtt_measure_response (rdpContext *rdp_context,
 {
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) rdp_context;
   GrdRdpNetworkAutodetection *network_autodetection;
-  PingInfo *ping_info;
+  g_autofree PingInfo *ping_info = NULL;
   int64_t pong_time_us;
+  int64_t ping_time_us;
+  int64_t base_round_trip_time_us;
   int64_t avg_round_trip_time_us;
   gboolean has_rtt_consumer_rdpgfx = FALSE;
 
@@ -335,20 +463,18 @@ autodetect_rtt_measure_response (rdpContext *rdp_context,
       g_clear_pointer (&ping_info, g_free);
     }
 
-  if (ping_info)
-    {
-      int64_t ping_time_us = ping_info->ping_time_us;
+  g_assert (ping_info);
+  g_assert (ping_info->sequence_number == sequence_number);
 
-      g_assert (ping_info->sequence_number == sequence_number);
-
-      track_round_trip_time (network_autodetection, ping_time_us, pong_time_us);
-      avg_round_trip_time_us =
-        get_current_avg_round_trip_time_us (network_autodetection);
-
-      g_hash_table_remove (network_autodetection->sequences,
-                           GUINT_TO_POINTER (ping_info->sequence_number));
-    }
+  g_hash_table_remove (network_autodetection->sequences,
+                       GUINT_TO_POINTER (ping_info->sequence_number));
   g_mutex_unlock (&network_autodetection->sequence_mutex);
+
+  ping_time_us = ping_info->ping_time_us;
+  track_round_trip_time (network_autodetection, ping_time_us, pong_time_us);
+  update_round_trip_time_values (network_autodetection,
+                                 &base_round_trip_time_us,
+                                 &avg_round_trip_time_us);
 
   g_mutex_lock (&network_autodetection->consumer_mutex);
   has_rtt_consumer_rdpgfx = has_rtt_consumer (
@@ -356,14 +482,52 @@ autodetect_rtt_measure_response (rdpContext *rdp_context,
   g_mutex_unlock (&network_autodetection->consumer_mutex);
 
   g_mutex_lock (&network_autodetection->shutdown_mutex);
-  if (ping_info && !network_autodetection->in_shutdown && has_rtt_consumer_rdpgfx)
+  if (!network_autodetection->in_shutdown && has_rtt_consumer_rdpgfx)
     {
       grd_rdp_graphics_pipeline_notify_new_round_trip_time (
         rdp_peer_context->graphics_pipeline, avg_round_trip_time_us);
     }
   g_mutex_unlock (&network_autodetection->shutdown_mutex);
 
-  g_free (ping_info);
+  maybe_send_network_characteristics_results (network_autodetection,
+                                              base_round_trip_time_us / 1000,
+                                              avg_round_trip_time_us / 1000);
+
+  return TRUE;
+}
+
+static BOOL
+autodetect_bw_measure_results (rdpContext *rdp_context,
+                               uint16_t    sequence_number)
+{
+  RdpPeerContext *rdp_peer_context = (RdpPeerContext *) rdp_context;
+  GrdRdpNetworkAutodetection *network_autodetection =
+    rdp_peer_context->network_autodetection;
+  rdpAutoDetect *rdp_autodetect;
+  g_autoptr (GMutexLocker) locker = NULL;
+  int64_t base_round_trip_time_us;
+  int64_t avg_round_trip_time_us;
+
+  locker = g_mutex_locker_new (&network_autodetection->bw_measure_mutex);
+  if (network_autodetection->bw_measure_state != BW_MEASURE_STATE_PENDING_RESULTS)
+    return TRUE;
+
+  network_autodetection->bw_measure_state = BW_MEASURE_STATE_NONE;
+  g_clear_pointer (&locker, g_mutex_locker_free);
+
+  rdp_autodetect = network_autodetection->rdp_autodetect;
+  if (rdp_autodetect->netCharBandwidth <= 0)
+    return TRUE;
+
+  network_autodetection->measured_bandwidth = rdp_autodetect->netCharBandwidth;
+
+  update_round_trip_time_values (network_autodetection,
+                                 &base_round_trip_time_us,
+                                 &avg_round_trip_time_us);
+
+  maybe_send_network_characteristics_results (network_autodetection,
+                                              base_round_trip_time_us / 1000,
+                                              avg_round_trip_time_us / 1000);
 
   return TRUE;
 }
@@ -381,6 +545,7 @@ grd_rdp_network_autodetection_new (rdpContext *rdp_context)
   network_autodetection->rdp_autodetect = rdp_autodetect;
 
   rdp_autodetect->RTTMeasureResponse = autodetect_rtt_measure_response;
+  rdp_autodetect->BandwidthMeasureResults = autodetect_bw_measure_results;
 
   return network_autodetection;
 }
@@ -411,6 +576,8 @@ grd_rdp_network_autodetection_dispose (GObject *object)
 
   g_clear_pointer (&network_autodetection->sequences, g_hash_table_destroy);
 
+  g_clear_pointer (&network_autodetection->bw_measure_stop_event, CloseHandle);
+
   G_OBJECT_CLASS (grd_rdp_network_autodetection_parent_class)->dispose (object);
 }
 
@@ -420,6 +587,7 @@ grd_rdp_network_autodetection_finalize (GObject *object)
   GrdRdpNetworkAutodetection *network_autodetection =
     GRD_RDP_NETWORK_AUTODETECTION (object);
 
+  g_mutex_clear (&network_autodetection->bw_measure_mutex);
   g_mutex_clear (&network_autodetection->sequence_mutex);
   g_mutex_clear (&network_autodetection->consumer_mutex);
   g_mutex_clear (&network_autodetection->shutdown_mutex);
@@ -430,6 +598,12 @@ grd_rdp_network_autodetection_finalize (GObject *object)
 static void
 grd_rdp_network_autodetection_init (GrdRdpNetworkAutodetection *network_autodetection)
 {
+  network_autodetection->ping_interval = PING_INTERVAL_NONE;
+  network_autodetection->bw_measure_state = BW_MEASURE_STATE_NONE;
+
+  network_autodetection->bw_measure_stop_event =
+    CreateEvent (NULL, TRUE, FALSE, NULL);
+
   network_autodetection->sequences = g_hash_table_new (NULL, NULL);
   network_autodetection->pings = g_queue_new ();
   network_autodetection->round_trip_times = g_queue_new ();
@@ -437,6 +611,7 @@ grd_rdp_network_autodetection_init (GrdRdpNetworkAutodetection *network_autodete
   g_mutex_init (&network_autodetection->shutdown_mutex);
   g_mutex_init (&network_autodetection->consumer_mutex);
   g_mutex_init (&network_autodetection->sequence_mutex);
+  g_mutex_init (&network_autodetection->bw_measure_mutex);
 }
 
 static void
