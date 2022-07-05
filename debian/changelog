@@ -1,6 +1,7 @@
-gnome-remote-desktop (42.3-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (42.3-1) unstable; urgency=medium
 
-  * New upstream release
+  * Team upload
+  * New upstream release (LP: #1980748)
 
  -- Nathan Pratta Teodosio <nathan.teodosio@canonical.com>  Mon, 04 Jul 2022 11:36:33 -0300
 
