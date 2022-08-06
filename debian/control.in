@@ -4,8 +4,10 @@ Priority: optional
 Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
 Uploaders: @GNOME_TEAM@
 Build-Depends: debhelper-compat (= 13),
+               asciidoc-base,
                dh-sequence-gnome,
                freerdp2-dev (>= 2.5.0),
+               docbook-xml,
                libcairo2-dev,
                libdrm-dev,
                libepoxy-dev (>= 1.4),
