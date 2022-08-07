@@ -90,7 +90,7 @@ struct _GrdRdpGraphicsPipeline
   GHashTable *surface_table;
   GHashTable *codec_context_table;
 
-  /* Unacknowledged Frames ADM element */
+  /* Unacknowledged Frames ADM element ([MS-RDPEGFX] 3.2.1.2) */
   GHashTable *frame_serial_table;
 
   GHashTable *serial_surface_table;
@@ -1291,6 +1291,9 @@ clear_all_unacked_frames_in_gfx_surface (gpointer key,
   GrdRdpGfxSurface *gfx_surface = value;
   GrdRdpGfxFrameController *frame_controller =
     grd_rdp_gfx_surface_get_frame_controller (gfx_surface);
+
+  if (!frame_controller)
+    return;
 
   grd_rdp_gfx_frame_controller_clear_all_unacked_frames (frame_controller);
 }

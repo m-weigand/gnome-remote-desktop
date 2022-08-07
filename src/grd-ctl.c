@@ -117,9 +117,20 @@ grd_store_rdp_credentials (const char  *username,
 static gboolean
 grd_clear_rdp_credentials (GError **error)
 {
-  return secret_password_clear_sync (GRD_RDP_CREDENTIALS_SCHEMA,
-                                     NULL, error,
-                                     NULL);
+  g_autoptr (GError) local_error = NULL;
+
+  secret_password_clear_sync (GRD_RDP_CREDENTIALS_SCHEMA,
+                              NULL, &local_error,
+                              NULL);
+  if (local_error)
+    {
+      g_propagate_error (error, g_steal_pointer (&local_error));
+      return FALSE;
+    }
+  else
+    {
+      return TRUE;
+    }
 }
 
 static gboolean
@@ -305,9 +316,20 @@ vnc_clear_credentials (int      argc,
                        char   **argv,
                        GError **error)
 {
-  return secret_password_clear_sync (GRD_VNC_PASSWORD_SCHEMA,
-                                     NULL, error,
-                                     NULL);
+  g_autoptr (GError) local_error = NULL;
+
+  secret_password_clear_sync (GRD_VNC_PASSWORD_SCHEMA,
+                              NULL, &local_error,
+                              NULL);
+  if (local_error)
+    {
+      g_propagate_error (error, g_steal_pointer (&local_error));
+      return FALSE;
+    }
+  else
+    {
+      return TRUE;
+    }
 }
 
 static gboolean
@@ -482,7 +504,7 @@ print_rdp_status (gboolean use_colors,
                                                     NULL);
   if (error)
     {
-      fprintf (stderr, "Failed to lookup RDP credentials: %s", error->message);
+      fprintf (stderr, "Failed to lookup RDP credentials: %s\n", error->message);
       return;
     }
 
@@ -538,7 +560,7 @@ print_vnc_status (gboolean use_colors,
                                           NULL);
   if (error)
     {
-      fprintf (stderr, "Failed to lookup RDP credentials: %s", error->message);
+      fprintf (stderr, "Failed to lookup VNC credentials: %s\n", error->message);
       return;
     }
 
