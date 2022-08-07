@@ -1,28 +1,50 @@
 src_includepath = include_directories('.')
 
+credentials_deps = [
+  libsecret_dep,
+  tss2_esys_dep,
+  tss2_mu_dep,
+  tss2_rc_dep,
+  tss2_tctildr_dep,
+]
+
 deps = [
   cairo_dep,
   glib_dep,
   gio_dep,
   gio_unix_dep,
   pipewire_dep,
-  libsecret_dep,
   libnotify_dep,
   epoxy_dep,
   drm_dep,
+
+  credentials_deps,
 ]
+
+credentials_sources = files([
+  'grd-credentials.c',
+  'grd-credentials.h',
+  'grd-credentials-libsecret.c',
+  'grd-credentials-libsecret.h',
+  'grd-credentials-tpm.c',
+  'grd-credentials-tpm.h',
+  'grd-tpm.c',
+  'grd-tpm.h',
+])
 
 daemon_sources = files([
   'grd-clipboard.c',
   'grd-clipboard.h',
   'grd-context.c',
   'grd-context.h',
-  'grd-egl-thread.c',
-  'grd-egl-thread.h',
   'grd-daemon.c',
   'grd-daemon.h',
   'grd-damage-utils.c',
   'grd-damage-utils.h',
+  'grd-debug.c',
+  'grd-debug.h',
+  'grd-egl-thread.c',
+  'grd-egl-thread.h',
   'grd-mime-type.c',
   'grd-mime-type.h',
   'grd-pipewire-utils.c',
@@ -32,8 +54,6 @@ daemon_sources = files([
   'grd-prompt.h',
   'grd-session.c',
   'grd-session.h',
-  'grd-schemas.c',
-  'grd-schemas.h',
   'grd-settings.c',
   'grd-settings.h',
   'grd-stream.c',
@@ -49,6 +69,10 @@ if have_rdp
     'grd-clipboard-rdp.h',
     'grd-hwaccel-nvidia.c',
     'grd-hwaccel-nvidia.h',
+    'grd-rdp-audio-output-stream.c',
+    'grd-rdp-audio-output-stream.h',
+    'grd-rdp-audio-playback.c',
+    'grd-rdp-audio-playback.h',
     'grd-rdp-buffer.c',
     'grd-rdp-buffer.h',
     'grd-rdp-buffer-pool.c',
@@ -61,6 +85,8 @@ if have_rdp
     'grd-rdp-damage-detector-memcmp.h',
     'grd-rdp-display-control.c',
     'grd-rdp-display-control.h',
+    'grd-rdp-dsp.c',
+    'grd-rdp-dsp.h',
     'grd-rdp-event-queue.c',
     'grd-rdp-event-queue.h',
     'grd-rdp-frame-info.h',
@@ -101,6 +127,12 @@ if have_rdp
     winpr_dep,
     xkbcommon_dep,
   ]
+
+  if (have_fdk_aac)
+    deps += [
+      fdk_aac_dep,
+    ]
+  endif
 endif
 
 if have_vnc
@@ -111,6 +143,7 @@ if have_vnc
     'grd-session-vnc.h',
     'grd-vnc-cursor.c',
     'grd-vnc-cursor.h',
+    'grd-vnc-monitor-config.h',
     'grd-vnc-pipewire-stream.c',
     'grd-vnc-pipewire-stream.h',
     'grd-vnc-server.c',
@@ -121,6 +154,8 @@ if have_vnc
     libvncserver_dep,
   ]
 endif
+
+daemon_sources += credentials_sources
 
 gen_daemon_sources = []
 
@@ -141,8 +176,9 @@ control_sources = ([
 
 ctl_sources = ([
   'grd-ctl.c',
-  'grd-schemas.c',
-  'grd-schemas.h',
+  'grd-debug.c',
+  'grd-debug.h',
+  credentials_sources,
 ])
 
 executable('gnome-remote-desktop-daemon',
@@ -160,7 +196,11 @@ executable('gnome-remote-desktop-control',
 
 executable('grdctl',
            ctl_sources,
-           dependencies: [glib_dep, gio_dep, libsecret_dep],
+           dependencies: [
+             glib_dep,
+             gio_dep,
+             credentials_deps,
+           ],
            include_directories: [configinc],
            install: true)
 

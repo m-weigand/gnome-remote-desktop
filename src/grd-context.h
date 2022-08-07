@@ -30,14 +30,17 @@
 #include "grd-settings.h"
 #include "grd-types.h"
 
-typedef enum _GrdDebugFlags
+typedef enum _GrdRuntimeMode
 {
-  GRD_DEBUG_NONE = 0,
-  GRD_DEBUG_VNC = 1 << 0,
-} GrdDebugFlags;
+  GRD_RUNTIME_MODE_SCREEN_SHARE,
+  GRD_RUNTIME_MODE_HEADLESS,
+} GrdRuntimeMode;
 
 #define GRD_TYPE_CONTEXT (grd_context_get_type ())
 G_DECLARE_FINAL_TYPE (GrdContext, grd_context, GRD, CONTEXT, GObject)
+
+GrdContext * grd_context_new (GrdRuntimeMode   runtime_mode,
+                              GError         **error);
 
 GrdDBusRemoteDesktop * grd_context_get_remote_desktop_proxy (GrdContext *context);
 
@@ -51,9 +54,9 @@ void grd_context_set_screen_cast_proxy (GrdContext        *context,
 
 GrdSettings * grd_context_get_settings (GrdContext *context);
 
-GrdEglThread * grd_context_get_egl_thread (GrdContext *context);
+GrdCredentials * grd_context_get_credentials (GrdContext *context);
 
-GrdDebugFlags grd_context_get_debug_flags (GrdContext *context);
+GrdEglThread * grd_context_get_egl_thread (GrdContext *context);
 
 void grd_context_notify_daemon_ready (GrdContext *context);
 

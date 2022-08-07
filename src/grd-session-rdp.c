@@ -32,6 +32,7 @@
 #include "grd-context.h"
 #include "grd-damage-utils.h"
 #include "grd-hwaccel-nvidia.h"
+#include "grd-rdp-audio-playback.h"
 #include "grd-rdp-buffer.h"
 #include "grd-rdp-damage-detector.h"
 #include "grd-rdp-display-control.h"
@@ -73,6 +74,23 @@ typedef enum _PauseKeyState
   PAUSE_KEY_STATE_NUMLOCK_DOWN,
   PAUSE_KEY_STATE_CTRL_UP,
 } PauseKeyState;
+
+typedef struct _DVCSubscription
+{
+  gboolean notified;
+
+  GrdRdpDVCCreationStatusCallback callback;
+  gpointer user_data;
+} DVCSubscription;
+
+typedef struct _DVCNotification
+{
+  int32_t creation_status;
+  gboolean pending_status;
+
+  GHashTable *subscriptions;
+  uint32_t next_subscription_id;
+} DVCNotification;
 
 typedef struct _Pointer
 {
@@ -133,6 +151,10 @@ struct _GrdSessionRdp
 
   GThread *graphics_thread;
   GMainContext *graphics_context;
+
+  GMutex dvc_notification_mutex;
+  GHashTable *dvc_table;
+  GSource *dvc_notification_source;
 
   GrdRdpSurface *rdp_surface;
   Pointer *last_pointer;
@@ -648,6 +670,130 @@ grd_session_rdp_notify_error (GrdSessionRdp      *session_rdp,
 
   unset_rdp_peer_flag (session_rdp, RDP_PEER_ACTIVATED);
   maybe_queue_close_session_idle (session_rdp);
+}
+
+static DVCNotification *
+dvc_notification_new (void)
+{
+  DVCNotification *dvc_notification;
+
+  dvc_notification = g_new0 (DVCNotification, 1);
+  dvc_notification->pending_status = TRUE;
+  dvc_notification->subscriptions = g_hash_table_new_full (NULL, NULL,
+                                                           NULL, g_free);
+
+  return dvc_notification;
+}
+
+static uint32_t
+get_next_free_dvc_subscription_id (DVCNotification *dvc_notification)
+{
+  uint32_t subscription_id = dvc_notification->next_subscription_id;
+
+  while (g_hash_table_contains (dvc_notification->subscriptions,
+                                GUINT_TO_POINTER (subscription_id)))
+    ++subscription_id;
+
+  dvc_notification->next_subscription_id = subscription_id + 1;
+
+  return subscription_id;
+}
+
+static uint32_t
+dvc_notification_add_subscription (DVCNotification *dvc_notification,
+                                   DVCSubscription *dvc_subscription)
+{
+  uint32_t subscription_id;
+
+  subscription_id = get_next_free_dvc_subscription_id (dvc_notification);
+  g_hash_table_insert (dvc_notification->subscriptions,
+                       GUINT_TO_POINTER (subscription_id), dvc_subscription);
+
+  return subscription_id;
+}
+
+uint32_t
+grd_session_rdp_subscribe_dvc_creation_status (GrdSessionRdp                   *session_rdp,
+                                               uint32_t                         channel_id,
+                                               GrdRdpDVCCreationStatusCallback  callback,
+                                               gpointer                         callback_user_data)
+{
+  DVCNotification *dvc_notification;
+  g_autofree DVCSubscription *dvc_subscription = NULL;
+  uint32_t subscription_id;
+  gboolean pending_notification = FALSE;
+
+  dvc_subscription = g_new0 (DVCSubscription, 1);
+  dvc_subscription->callback = callback;
+  dvc_subscription->user_data = callback_user_data;
+
+  g_mutex_lock (&session_rdp->dvc_notification_mutex);
+  if (g_hash_table_lookup_extended (session_rdp->dvc_table,
+                                    GUINT_TO_POINTER (channel_id),
+                                    NULL, (gpointer *) &dvc_notification))
+    {
+      subscription_id =
+        dvc_notification_add_subscription (dvc_notification,
+                                           g_steal_pointer (&dvc_subscription));
+
+      if (!dvc_notification->pending_status)
+        pending_notification = TRUE;
+    }
+  else
+    {
+      dvc_notification = dvc_notification_new ();
+
+      subscription_id =
+        dvc_notification_add_subscription (dvc_notification,
+                                           g_steal_pointer (&dvc_subscription));
+
+      g_hash_table_insert (session_rdp->dvc_table,
+                           GUINT_TO_POINTER (channel_id), dvc_notification);
+    }
+  g_mutex_unlock (&session_rdp->dvc_notification_mutex);
+
+  if (pending_notification)
+    g_source_set_ready_time (session_rdp->dvc_notification_source, 0);
+
+  return subscription_id;
+}
+
+void
+grd_session_rdp_unsubscribe_dvc_creation_status (GrdSessionRdp *session_rdp,
+                                                 uint32_t       channel_id,
+                                                 uint32_t       subscription_id)
+{
+  DVCNotification *dvc_notification;
+
+  g_mutex_lock (&session_rdp->dvc_notification_mutex);
+  if (!g_hash_table_lookup_extended (session_rdp->dvc_table,
+                                     GUINT_TO_POINTER (channel_id),
+                                     NULL, (gpointer *) &dvc_notification))
+    g_assert_not_reached ();
+
+  g_hash_table_remove (dvc_notification->subscriptions,
+                       GUINT_TO_POINTER (subscription_id));
+  g_mutex_unlock (&session_rdp->dvc_notification_mutex);
+}
+
+void
+grd_session_rdp_tear_down_channel (GrdSessionRdp *session_rdp,
+                                   GrdRdpChannel  channel)
+{
+  freerdp_peer *peer = session_rdp->peer;
+  RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
+
+  g_mutex_lock (&rdp_peer_context->channel_mutex);
+  switch (channel)
+    {
+    case GRD_RDP_CHANNEL_NONE:
+      g_assert_not_reached ();
+      break;
+    case GRD_RDP_CHANNEL_AUDIO_PLAYBACK:
+      g_clear_object (&rdp_peer_context->audio_playback);
+      break;
+    }
+  g_mutex_unlock (&rdp_peer_context->channel_mutex);
 }
 
 static void
@@ -1738,6 +1884,18 @@ rdp_peer_post_connect (freerdp_peer *peer)
                  "(RTT detection, Bandwidth measurement). "
                  "High latency connections will suffer!");
     }
+  if (rdp_settings->AudioPlayback && !rdp_settings->NetworkAutoDetect)
+    {
+      g_warning ("[RDP] Client does not support autodetecting network "
+                 "characteristics. Disabling audio output redirection");
+      rdp_settings->AudioPlayback = FALSE;
+    }
+  if (rdp_settings->AudioPlayback && !rdp_settings->SupportGraphicsPipeline)
+    {
+      g_warning ("[RDP] Client does not support graphics pipeline. Disabling "
+                 "audio output redirection");
+      rdp_settings->AudioPlayback = FALSE;
+    }
 
   if (rdp_settings->NetworkAutoDetect)
     {
@@ -1827,6 +1985,58 @@ rdp_peer_context_free (freerdp_peer   *peer,
     }
 
   g_clear_pointer (&rdp_peer_context->rfx_context, rfx_context_free);
+
+  g_mutex_clear (&rdp_peer_context->channel_mutex);
+}
+
+static BOOL
+dvc_creation_status (void     *user_data,
+                     uint32_t  channel_id,
+                     int32_t   creation_status)
+{
+  RdpPeerContext *rdp_peer_context = user_data;
+  GrdSessionRdp *session_rdp = rdp_peer_context->session_rdp;
+  DVCNotification *dvc_notification;
+  gboolean pending_notification = FALSE;
+
+  g_debug ("[RDP.DRDYNVC] DVC channel id %u creation status: %i",
+           channel_id, creation_status);
+
+  g_mutex_lock (&session_rdp->dvc_notification_mutex);
+  if (g_hash_table_lookup_extended (session_rdp->dvc_table,
+                                    GUINT_TO_POINTER (channel_id),
+                                    NULL, (gpointer *) &dvc_notification))
+    {
+      if (dvc_notification->pending_status)
+        {
+          dvc_notification->creation_status = creation_status;
+          dvc_notification->pending_status = FALSE;
+
+          if (g_hash_table_size (dvc_notification->subscriptions) > 0)
+            pending_notification = TRUE;
+        }
+      else
+        {
+          g_warning ("[RDP.DRDYNVC] Status of channel %u already known. "
+                     "Discarding result", channel_id);
+        }
+    }
+  else
+    {
+      dvc_notification = dvc_notification_new ();
+
+      dvc_notification->creation_status = creation_status;
+      dvc_notification->pending_status = FALSE;
+
+      g_hash_table_insert (session_rdp->dvc_table,
+                           GUINT_TO_POINTER (channel_id), dvc_notification);
+    }
+  g_mutex_unlock (&session_rdp->dvc_notification_mutex);
+
+  if (pending_notification)
+    g_source_set_ready_time (session_rdp->dvc_notification_source, 0);
+
+  return TRUE;
 }
 
 static BOOL
@@ -1837,10 +2047,13 @@ rdp_peer_context_new (freerdp_peer   *peer,
 
   rdp_peer_context->frame_id = 0;
 
+  g_mutex_init (&rdp_peer_context->channel_mutex);
+
   rdp_peer_context->rfx_context = rfx_context_new (TRUE);
   if (!rdp_peer_context->rfx_context)
     {
       g_warning ("[RDP] Failed to create RFX context");
+      rdp_peer_context_free (peer, rdp_peer_context);
       return FALSE;
     }
   rfx_context_set_pixel_format (rdp_peer_context->rfx_context,
@@ -1866,6 +2079,10 @@ rdp_peer_context_new (freerdp_peer   *peer,
       rdp_peer_context_free (peer, rdp_peer_context);
       return FALSE;
     }
+
+  WTSVirtualChannelManagerSetDVCCreationCallback (rdp_peer_context->vcm,
+                                                  dvc_creation_status,
+                                                  rdp_peer_context);
 
   return TRUE;
 }
@@ -1944,6 +2161,7 @@ init_rdp_session (GrdSessionRdp  *session_rdp,
 
   rdp_settings->OsMajorType = OSMAJORTYPE_UNIX;
   rdp_settings->OsMinorType = OSMINORTYPE_PSEUDO_XSERVER;
+  rdp_settings->AudioPlayback = TRUE;
   rdp_settings->ColorDepth = 32;
   rdp_settings->GfxAVC444v2 = rdp_settings->GfxAVC444 = FALSE;
   rdp_settings->GfxH264 = FALSE;
@@ -1953,6 +2171,7 @@ init_rdp_session (GrdSessionRdp  *session_rdp,
   rdp_settings->HasHorizontalWheel = TRUE;
   rdp_settings->NetworkAutoDetect = TRUE;
   rdp_settings->RefreshRect = TRUE;
+  rdp_settings->RemoteConsoleAudio = TRUE;
   rdp_settings->RemoteFxCodec = TRUE;
   rdp_settings->SupportGraphicsPipeline = TRUE;
   rdp_settings->NSCodec = TRUE;
@@ -1994,7 +2213,6 @@ socket_thread_func (gpointer data)
   GrdSessionRdp *session_rdp = data;
   freerdp_peer *peer;
   RdpPeerContext *rdp_peer_context;
-  rdpSettings *rdp_settings;
   HANDLE vcm;
   HANDLE channel_event;
   HANDLE events[32];
@@ -2006,7 +2224,6 @@ socket_thread_func (gpointer data)
 
   peer = session_rdp->peer;
   rdp_peer_context = (RdpPeerContext *) peer->context;
-  rdp_settings = peer->settings;
   vcm = rdp_peer_context->vcm;
   channel_event = WTSVirtualChannelManagerGetEventHandle (vcm);
 
@@ -2054,6 +2271,7 @@ socket_thread_func (gpointer data)
       if (WTSVirtualChannelManagerIsChannelJoined (vcm, "drdynvc"))
         {
           GrdRdpGraphicsPipeline *graphics_pipeline;
+          GrdRdpAudioPlayback *audio_playback;
           GrdRdpDisplayControl *display_control;
 
           switch (WTSVirtualChannelManagerGetDrdynvcState (vcm))
@@ -2066,13 +2284,15 @@ socket_thread_func (gpointer data)
               SetEvent (channel_event);
               break;
             case DRDYNVC_STATE_READY:
+              g_mutex_lock (&rdp_peer_context->channel_mutex);
               graphics_pipeline = rdp_peer_context->graphics_pipeline;
+              audio_playback = rdp_peer_context->audio_playback;
               display_control = rdp_peer_context->display_control;
 
-              if (rdp_settings->SupportGraphicsPipeline)
-                grd_rdp_graphics_pipeline_maybe_init (graphics_pipeline);
-
+              grd_rdp_graphics_pipeline_maybe_init (graphics_pipeline);
+              grd_rdp_audio_playback_maybe_init (audio_playback);
               grd_rdp_display_control_maybe_init (display_control);
+              g_mutex_unlock (&rdp_peer_context->channel_mutex);
               break;
             }
 
@@ -2135,25 +2355,15 @@ grd_session_rdp_new (GrdRdpServer      *rdp_server,
 
   context = grd_rdp_server_get_context (rdp_server);
   settings = grd_context_get_settings (context);
-  username = grd_settings_get_rdp_username (settings, &error);
-  if (!username)
+  if (!grd_settings_get_rdp_credentials (settings,
+                                         &username, &password,
+                                         &error))
     {
       if (error)
-        g_warning ("[RDP] Couldn't retrieve RDP username: %s", error->message);
+        g_warning ("[RDP] Couldn't retrieve RDP credentials: %s", error->message);
       else
-        g_message ("[RDP] Username is not set, denying client");
+        g_message ("[RDP] Credentials are not set, denying client");
 
-      return NULL;
-    }
-  password = grd_settings_get_rdp_password (settings, &error);
-  if (!password)
-    {
-      if (error)
-        g_warning ("[RDP] Couldn't retrieve RDP password: %s", error->message);
-      else
-        g_message ("[RDP] Password is not set, denying client");
-
-      g_free (username);
       return NULL;
     }
 
@@ -2200,6 +2410,11 @@ clear_session_sources (GrdSessionRdp *session_rdp)
     {
       g_source_destroy (session_rdp->pending_encode_source);
       g_clear_pointer (&session_rdp->pending_encode_source, g_source_unref);
+    }
+  if (session_rdp->dvc_notification_source)
+    {
+      g_source_destroy (session_rdp->dvc_notification_source);
+      g_clear_pointer (&session_rdp->dvc_notification_source, g_source_unref);
     }
 }
 
@@ -2258,6 +2473,7 @@ grd_session_rdp_stop (GrdSession *session)
   g_clear_object (&session_rdp->pipewire_stream);
 
   g_clear_object (&rdp_peer_context->clipboard_rdp);
+  g_clear_object (&rdp_peer_context->audio_playback);
   g_clear_object (&rdp_peer_context->display_control);
   g_clear_object (&rdp_peer_context->graphics_pipeline);
 
@@ -2314,14 +2530,20 @@ grd_session_rdp_remote_desktop_session_ready (GrdSession *session)
   GrdSessionRdp *session_rdp = GRD_SESSION_RDP (session);
   freerdp_peer *peer = session_rdp->peer;
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
+  rdpSettings *rdp_settings = peer->settings;
 
   if (WTSVirtualChannelManagerIsChannelJoined (rdp_peer_context->vcm,
                                                "cliprdr"))
     {
       rdp_peer_context->clipboard_rdp =
-        grd_clipboard_rdp_new (session_rdp,
-                               rdp_peer_context->vcm,
+        grd_clipboard_rdp_new (session_rdp, rdp_peer_context->vcm,
                                session_rdp->stop_event);
+    }
+  if (rdp_settings->AudioPlayback && !rdp_settings->RemoteConsoleAudio)
+    {
+      rdp_peer_context->audio_playback =
+        grd_rdp_audio_playback_new (session_rdp, rdp_peer_context->vcm,
+                                    session_rdp->stop_event, peer->context);
     }
 }
 
@@ -2445,6 +2667,7 @@ grd_session_rdp_dispose (GObject *object)
   g_clear_pointer (&session_rdp->pressed_unicode_keys, g_hash_table_unref);
   g_clear_pointer (&session_rdp->pressed_keys, g_hash_table_unref);
   g_clear_pointer (&session_rdp->pointer_cache, g_hash_table_unref);
+  g_clear_pointer (&session_rdp->dvc_table, g_hash_table_unref);
 
   g_clear_pointer (&session_rdp->stop_event, CloseHandle);
 
@@ -2458,11 +2681,22 @@ grd_session_rdp_finalize (GObject *object)
 
   g_mutex_clear (&session_rdp->monitor_config_mutex);
   g_mutex_clear (&session_rdp->close_session_mutex);
+  g_mutex_clear (&session_rdp->dvc_notification_mutex);
   g_mutex_clear (&session_rdp->rdp_flags_mutex);
   g_mutex_clear (&session_rdp->pending_jobs_mutex);
   g_cond_clear (&session_rdp->pending_jobs_cond);
 
   G_OBJECT_CLASS (grd_session_rdp_parent_class)->finalize (object);
+}
+
+static void
+dvc_notification_free (gpointer data)
+{
+  DVCNotification *dvc_notification = data;
+
+  g_clear_pointer (&dvc_notification->subscriptions, g_hash_table_unref);
+
+  g_free (dvc_notification);
 }
 
 static gboolean
@@ -2489,6 +2723,40 @@ are_pointer_bitmaps_equal (gconstpointer a,
     return FALSE;
 
   return TRUE;
+}
+
+static gboolean
+notify_channels (gpointer user_data)
+{
+  GrdSessionRdp *session_rdp = user_data;
+  GHashTableIter iter;
+  DVCNotification *dvc_notification;
+
+  g_mutex_lock (&session_rdp->dvc_notification_mutex);
+  g_hash_table_iter_init (&iter, session_rdp->dvc_table);
+  while (g_hash_table_iter_next (&iter, NULL, (gpointer *) &dvc_notification))
+    {
+      GHashTableIter iter2;
+      DVCSubscription *dvc_subscription;
+
+      if (dvc_notification->pending_status)
+        continue;
+
+      g_hash_table_iter_init (&iter2, dvc_notification->subscriptions);
+      while (g_hash_table_iter_next (&iter2, NULL, (gpointer *) &dvc_subscription))
+        {
+          if (dvc_subscription->notified)
+            continue;
+
+          dvc_subscription->callback (dvc_subscription->user_data,
+                                      dvc_notification->creation_status);
+
+          dvc_subscription->notified = TRUE;
+        }
+    }
+  g_mutex_unlock (&session_rdp->dvc_notification_mutex);
+
+  return G_SOURCE_CONTINUE;
 }
 
 static gboolean
@@ -2544,6 +2812,8 @@ grd_session_rdp_init (GrdSessionRdp *session_rdp)
 {
   session_rdp->stop_event = CreateEvent (NULL, TRUE, FALSE, NULL);
 
+  session_rdp->dvc_table = g_hash_table_new_full (NULL, NULL,
+                                                  NULL, dvc_notification_free);
   session_rdp->pointer_cache = g_hash_table_new (NULL, are_pointer_bitmaps_equal);
   session_rdp->pressed_keys = g_hash_table_new (NULL, NULL);
   session_rdp->pressed_unicode_keys = g_hash_table_new (NULL, NULL);
@@ -2551,12 +2821,20 @@ grd_session_rdp_init (GrdSessionRdp *session_rdp)
   g_cond_init (&session_rdp->pending_jobs_cond);
   g_mutex_init (&session_rdp->pending_jobs_mutex);
   g_mutex_init (&session_rdp->rdp_flags_mutex);
+  g_mutex_init (&session_rdp->dvc_notification_mutex);
   g_mutex_init (&session_rdp->close_session_mutex);
   g_mutex_init (&session_rdp->monitor_config_mutex);
 
   session_rdp->rdp_event_queue = grd_rdp_event_queue_new (session_rdp);
 
   session_rdp->graphics_context = g_main_context_new ();
+
+  session_rdp->dvc_notification_source = g_source_new (&session_source_funcs,
+                                                       sizeof (GSource));
+  g_source_set_callback (session_rdp->dvc_notification_source,
+                         notify_channels, session_rdp, NULL);
+  g_source_set_ready_time (session_rdp->dvc_notification_source, -1);
+  g_source_attach (session_rdp->dvc_notification_source, NULL);
 
   session_rdp->pending_encode_source = g_source_new (&session_source_funcs,
                                                      sizeof (GSource));

@@ -27,7 +27,6 @@
 #include <spa/param/props.h>
 #include <spa/param/format-utils.h>
 #include <spa/param/video/format-utils.h>
-#include <spa/utils/result.h>
 #include <sys/mman.h>
 
 #include "grd-context.h"
@@ -271,71 +270,6 @@ create_render_source (GrdRdpPipeWireStream *stream,
   g_source_set_callback (stream->render_source, do_render, stream, NULL);
   g_source_set_ready_time (stream->render_source, -1);
   g_source_attach (stream->render_source, render_context);
-}
-
-static gboolean
-pipewire_loop_source_prepare (GSource *base,
-                              int     *timeout)
-{
-  *timeout = -1;
-  return FALSE;
-}
-
-static gboolean
-pipewire_loop_source_dispatch (GSource     *source,
-                               GSourceFunc  callback,
-                               gpointer     user_data)
-{
-  GrdPipeWireSource *pipewire_source = (GrdPipeWireSource *) source;
-  int result;
-
-  result = pw_loop_iterate (pipewire_source->pipewire_loop, 0);
-  if (result < 0)
-    g_warning ("pipewire_loop_iterate failed: %s", spa_strerror (result));
-
-  return TRUE;
-}
-
-static void
-pipewire_loop_source_finalize (GSource *source)
-{
-  GrdPipeWireSource *pipewire_source = (GrdPipeWireSource *) source;
-
-  pw_loop_leave (pipewire_source->pipewire_loop);
-  pw_loop_destroy (pipewire_source->pipewire_loop);
-}
-
-static GSourceFuncs pipewire_source_funcs =
-{
-  pipewire_loop_source_prepare,
-  NULL,
-  pipewire_loop_source_dispatch,
-  pipewire_loop_source_finalize
-};
-
-static GrdPipeWireSource *
-create_pipewire_source (void)
-{
-  GrdPipeWireSource *pipewire_source;
-
-  pipewire_source =
-    (GrdPipeWireSource *) g_source_new (&pipewire_source_funcs,
-                                        sizeof (GrdPipeWireSource));
-  pipewire_source->pipewire_loop = pw_loop_new (NULL);
-  if (!pipewire_source->pipewire_loop)
-    {
-      g_source_destroy ((GSource *) pipewire_source);
-      return NULL;
-    }
-
-  g_source_add_unix_fd (&pipewire_source->base,
-                        pw_loop_get_fd (pipewire_source->pipewire_loop),
-                        G_IO_IN | G_IO_ERR);
-
-  pw_loop_enter (pipewire_source->pipewire_loop);
-  g_source_attach (&pipewire_source->base, NULL);
-
-  return pipewire_source;
 }
 
 static void
@@ -831,80 +765,6 @@ process_frame_data (GrdRdpPipeWireStream *stream,
                                grd_rdp_frame_ref (g_steal_pointer (&frame)),
                                (GDestroyNotify) grd_rdp_frame_unref);
     }
-  else if (buffer->datas[0].type == SPA_DATA_MemPtr)
-    {
-      GrdSession *session = GRD_SESSION (stream->session_rdp);
-      GrdContext *context = grd_session_get_context (session);
-      GrdEglThread *egl_thread = grd_context_get_egl_thread (context);
-      GrdHwAccelNvidia *hwaccel_nvidia = stream->rdp_surface->hwaccel_nvidia;
-      AllocateBufferData *allocate_buffer_data;
-      RealizeBufferData *realize_buffer_data;
-      GrdRdpBuffer *rdp_buffer;
-      void *src_data;
-      uint32_t pbo;
-      uint8_t *data_to_upload;
-
-      src_data = buffer->datas[0].data;
-
-      frame->buffer = grd_rdp_buffer_pool_acquire (stream->buffer_pool);
-      if (!frame->buffer)
-        {
-          grd_session_rdp_notify_error (stream->session_rdp,
-                                        GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
-          callback (stream, g_steal_pointer (&frame), FALSE, user_data);
-          return;
-        }
-      rdp_buffer = frame->buffer;
-      pbo = rdp_buffer->pbo;
-
-      if (stream->rdp_surface->needs_no_local_data &&
-          src_stride == dst_stride)
-        {
-          data_to_upload = src_data;
-        }
-      else
-        {
-          copy_frame_data (frame,
-                           src_data,
-                           width, height,
-                           dst_stride,
-                           src_stride,
-                           bpp);
-
-          data_to_upload = rdp_buffer->local_data;
-        }
-
-      if (!hwaccel_nvidia)
-        {
-          callback (stream, g_steal_pointer (&frame), TRUE, user_data);
-          return;
-        }
-
-      unmap_cuda_resources (egl_thread, hwaccel_nvidia, rdp_buffer);
-
-      allocate_buffer_data = g_new0 (AllocateBufferData, 1);
-      allocate_buffer_data->hwaccel_nvidia = hwaccel_nvidia;
-      allocate_buffer_data->rdp_buffer = rdp_buffer;
-
-      realize_buffer_data = g_new0 (RealizeBufferData, 1);
-      realize_buffer_data->hwaccel_nvidia = hwaccel_nvidia;
-      realize_buffer_data->rdp_buffer = rdp_buffer;
-
-      grd_egl_thread_upload (egl_thread,
-                             pbo,
-                             height,
-                             dst_stride,
-                             data_to_upload,
-                             cuda_allocate_buffer,
-                             allocate_buffer_data,
-                             g_free,
-                             cuda_map_resource,
-                             realize_buffer_data,
-                             g_free,
-                             on_framebuffer_ready,
-                             grd_rdp_frame_ref (g_steal_pointer (&frame)),
-                             (GDestroyNotify) grd_rdp_frame_unref);
-    }
   else
     {
       callback (stream, g_steal_pointer (&frame), TRUE, user_data);
@@ -1228,22 +1088,19 @@ grd_rdp_pipewire_stream_new (GrdSessionRdp               *session_rdp,
   g_autoptr (GrdRdpPipeWireStream) stream = NULL;
   GrdPipeWireSource *pipewire_source;
 
-  grd_maybe_initialize_pipewire ();
-
   stream = g_object_new (GRD_TYPE_RDP_PIPEWIRE_STREAM, NULL);
   stream->session_rdp = session_rdp;
   stream->rdp_surface = rdp_surface;
   stream->src_node_id = src_node_id;
 
+  pw_init (NULL, NULL);
+
   create_render_source (stream, render_context);
 
-  pipewire_source = create_pipewire_source ();
+  pipewire_source = grd_attached_pipewire_source_new ("RDP", error);
   if (!pipewire_source)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "Failed to create PipeWire source");
-      return NULL;
-    }
+    return NULL;
+
   stream->pipewire_source = (GSource *) pipewire_source;
 
   stream->pipewire_context = pw_context_new (pipewire_source->pipewire_loop,
@@ -1326,6 +1183,8 @@ grd_rdp_pipewire_stream_finalize (GObject *object)
   g_clear_object (&stream->buffer_pool);
 
   g_mutex_clear (&stream->frame_mutex);
+
+  pw_deinit ();
 
   G_OBJECT_CLASS (grd_rdp_pipewire_stream_parent_class)->finalize (object);
 }

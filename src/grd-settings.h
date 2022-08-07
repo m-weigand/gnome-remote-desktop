@@ -22,13 +22,15 @@
 #define GRD_SETTINGS_H
 
 #include <glib-object.h>
-#include <libsecret/secret.h>
 
 #include "grd-enums.h"
+#include "grd-types.h"
 
 #define GRD_TYPE_SETTINGS (grd_settings_get_type ())
 G_DECLARE_FINAL_TYPE (GrdSettings, grd_settings,
                       GRD, SETTINGS, GObject)
+
+GrdSettings * grd_settings_new (GrdContext *context);
 
 gboolean grd_settings_is_rdp_enabled (GrdSettings *settings);
 
@@ -50,13 +52,12 @@ char * grd_settings_get_rdp_server_cert (GrdSettings *settings);
 
 char * grd_settings_get_rdp_server_key (GrdSettings *settings);
 
-char * grd_settings_get_rdp_password (GrdSettings  *settings,
-                                      GError      **error);
+gboolean grd_settings_get_rdp_credentials (GrdSettings  *settings,
+                                           char        **username,
+                                           char        **password,
+                                           GError      **error);
 
 char * grd_settings_get_vnc_password (GrdSettings  *settings,
-                                      GError      **error);
-
-char * grd_settings_get_rdp_username (GrdSettings  *settings,
                                       GError      **error);
 
 gboolean grd_settings_get_rdp_view_only (GrdSettings *settings);
@@ -64,5 +65,7 @@ gboolean grd_settings_get_rdp_view_only (GrdSettings *settings);
 gboolean grd_settings_get_vnc_view_only (GrdSettings *settings);
 
 GrdVncAuthMethod grd_settings_get_vnc_auth_method (GrdSettings *settings);
+
+GrdVncScreenShareMode grd_settings_get_vnc_screen_share_mode (GrdSettings *settings);
 
 #endif /* GRD_SETTINGS_H */
