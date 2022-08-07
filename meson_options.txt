@@ -1,3 +1,13 @@
+option('man',
+       type: 'boolean',
+       value: true,
+       description: 'Generate man pages')
+
+option('fdk_aac',
+       type: 'boolean',
+       value: true,
+       description: 'Audio output redirection for the RDP backend')
+
 option('rdp',
        type: 'boolean',
        value: true,
@@ -5,7 +15,7 @@ option('rdp',
 
 option('vnc',
        type: 'boolean',
-       value: true,
+       value: false,
        description: 'Enable the VNC backend')
 
 option('systemd',

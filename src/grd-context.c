@@ -24,14 +24,13 @@
 
 #include "grd-context.h"
 
+#include "grd-credentials-libsecret.h"
+#include "grd-credentials-tpm.h"
 #include "grd-egl-thread.h"
+#include "grd-settings.h"
 
 #include "grd-dbus-remote-desktop.h"
 #include "grd-dbus-screen-cast.h"
-
-static const GDebugKey grd_debug_keys[] = {
-  { "vnc", GRD_DEBUG_VNC },
-};
 
 struct _GrdContext
 {
@@ -42,9 +41,8 @@ struct _GrdContext
 
   GrdEglThread *egl_thread;
 
+  GrdCredentials *credentials;
   GrdSettings *settings;
-
-  GrdDebugFlags debug_flags;
 };
 
 G_DEFINE_TYPE (GrdContext, grd_context, G_TYPE_OBJECT)
@@ -83,16 +81,16 @@ grd_context_get_settings (GrdContext *context)
   return context->settings;
 }
 
+GrdCredentials *
+grd_context_get_credentials (GrdContext *context)
+{
+  return context->credentials;
+}
+
 GrdEglThread *
 grd_context_get_egl_thread (GrdContext *context)
 {
   return context->egl_thread;
-}
-
-GrdDebugFlags
-grd_context_get_debug_flags (GrdContext *context)
-{
-  return context->debug_flags;
 }
 
 void
@@ -108,19 +106,30 @@ grd_context_notify_daemon_ready (GrdContext *context)
     g_debug ("Failed to create EGL thread: %s", error->message);
 }
 
-static void
-init_debug_flags (GrdContext *context)
+GrdContext *
+grd_context_new (GrdRuntimeMode   runtime_mode,
+                 GError         **error)
 {
-  const char *debug_env;
+  g_autoptr (GrdContext) context = NULL;
 
-  debug_env = g_getenv ("GNOME_REMOTE_DESKTOP_DEBUG");
-  if (debug_env)
+  context = g_object_new (GRD_TYPE_CONTEXT, NULL);
+
+  switch (runtime_mode)
     {
-      context->debug_flags =
-        g_parse_debug_string (debug_env,
-                              grd_debug_keys,
-                              G_N_ELEMENTS (grd_debug_keys));
+    case GRD_RUNTIME_MODE_HEADLESS:
+      context->credentials = GRD_CREDENTIALS (grd_credentials_tpm_new (error));
+      break;
+    case GRD_RUNTIME_MODE_SCREEN_SHARE:
+      context->credentials = GRD_CREDENTIALS (grd_credentials_libsecret_new ());
+      break;
     }
+
+  if (!context->credentials)
+    return NULL;
+
+  context->settings = grd_settings_new (context);
+
+  return g_steal_pointer (&context);
 }
 
 static void
@@ -132,6 +141,7 @@ grd_context_finalize (GObject *object)
   g_clear_object (&context->screen_cast_proxy);
   g_clear_pointer (&context->egl_thread, grd_egl_thread_free);
   g_clear_object (&context->settings);
+  g_clear_object (&context->credentials);
 
   G_OBJECT_CLASS (grd_context_parent_class)->finalize (object);
 }
@@ -139,9 +149,6 @@ grd_context_finalize (GObject *object)
 static void
 grd_context_init (GrdContext *context)
 {
-  init_debug_flags (context);
-
-  context->settings = g_object_new (GRD_TYPE_SETTINGS, NULL);
 }
 
 static void

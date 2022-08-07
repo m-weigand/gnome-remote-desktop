@@ -1,14 +1,14 @@
 project('gnome-remote-desktop', 'c',
-        version: '42.4',
+        version: '43.beta',
         meson_version: '>= 0.47.0',
         default_options: ['warning_level=1',
                           'buildtype=debugoptimized'])
 
 cuda_req = '>= 11.1.5.0'
-freerdp_req = '>= 2.5.0'
+epoxy_req = '>= 1.4'
+freerdp_req = '>= 2.8.0'
 fuse_req = '>= 3.9.1'
 xkbcommon_req = '>= 1.0.0'
-epoxy_req = '>= 1.4'
 
 gnome = import('gnome')
 i18n  = import('i18n')
@@ -16,21 +16,30 @@ i18n  = import('i18n')
 cc = meson.get_compiler('c')
 
 cairo_dep = dependency('cairo')
+drm_dep = dependency('libdrm')
+epoxy_dep = dependency('epoxy')
 glib_dep = dependency('glib-2.0', version: '>= 2.68')
 gio_dep = dependency('gio-2.0')
 gio_unix_dep = dependency('gio-unix-2.0')
-pipewire_dep = dependency('libpipewire-0.3', version: '>= 0.3.0')
-systemd_dep = dependency('systemd', required: get_option('systemd'))
-libsecret_dep = dependency('libsecret-1')
 libnotify_dep = dependency('libnotify')
-epoxy_dep = dependency('epoxy')
-drm_dep = dependency('libdrm')
+libsecret_dep = dependency('libsecret-1')
+pipewire_dep = dependency('libpipewire-0.3', version: '>= 0.3.49')
+systemd_dep = dependency('systemd', required: get_option('systemd'))
+tss2_esys_dep = dependency('tss2-esys')
+tss2_mu_dep = dependency('tss2-mu')
+tss2_rc_dep = dependency('tss2-rc')
+tss2_tctildr_dep = dependency('tss2-tctildr')
 
+have_fdk_aac = get_option('fdk_aac')
 have_rdp = get_option('rdp')
 have_vnc = get_option('vnc')
 
 if not have_rdp and not have_vnc
   error('Must enable at least one backend')
+endif
+
+if have_fdk_aac and not have_rdp
+  error('Support for audio output redirection using FDK AAC requires the RDP backend')
 endif
 
 if have_rdp
@@ -45,16 +54,21 @@ if have_rdp
   fuse_dep = dependency('fuse3', version: fuse_req)
   winpr_dep = dependency('winpr2', version: freerdp_req)
   xkbcommon_dep = dependency('xkbcommon', version: xkbcommon_req)
+
+  if have_fdk_aac
+    fdk_aac_dep = dependency('fdk-aac')
+  endif
 endif
 
 if have_vnc
-  libvncserver_dep = dependency('libvncserver')
   libvncclient_dep = dependency('libvncclient')
+  libvncserver_dep = dependency('libvncserver')
 endif
 
 prefix = get_option('prefix')
 libexecdir = join_paths(prefix, get_option('libexecdir'))
 datadir = join_paths(prefix, get_option('datadir'))
+mandir = join_paths(prefix, get_option('mandir'))
 schemadir = join_paths(datadir, 'glib-2.0', 'schemas')
 
 grd_datadir = join_paths(datadir, 'gnome-remote-desktop')
@@ -65,6 +79,7 @@ cdata.set_quoted('VERSION', meson.project_version())
 
 cdata.set('HAVE_RDP', have_rdp)
 cdata.set('HAVE_VNC', have_vnc)
+cdata.set('HAVE_FDK_AAC', have_fdk_aac)
 
 cdata.set_quoted('GRD_DATA_DIR', grd_datadir)
 
@@ -93,6 +108,10 @@ subdir('src')
 subdir('tests')
 subdir('po')
 
+if get_option('man')
+  subdir('man')
+endif
+
 meson.add_install_script('meson_post_install.py')
 
 output = [
@@ -111,6 +130,10 @@ output = [
   '',
   '        RDP...................... ' + have_rdp.to_string(),
   '        VNC...................... ' + have_vnc.to_string(),
+  '',
+  '    Options for the RDP backend:',
+  '',
+  '        Support for audio output redirection using FDK AAC........' + have_fdk_aac.to_string(),
   '',
   '  Now type \'ninja -C ' + meson.build_root() + '\' to build ' + meson.project_name(),
   '',

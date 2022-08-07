@@ -26,7 +26,6 @@
 #include <pipewire/pipewire.h>
 #include <spa/param/props.h>
 #include <spa/param/format-utils.h>
-#include <spa/utils/result.h>
 #include <sys/mman.h>
 
 #include "grd-context.h"
@@ -98,71 +97,6 @@ static void grd_vnc_frame_unref (GrdVncFrame *frame);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (GrdVncFrame, grd_vnc_frame_unref)
 
-static gboolean
-pipewire_loop_source_prepare (GSource *base,
-                              int     *timeout)
-{
-  *timeout = -1;
-  return FALSE;
-}
-
-static gboolean
-pipewire_loop_source_dispatch (GSource     *source,
-                               GSourceFunc  callback,
-                               gpointer     user_data)
-{
-  GrdPipeWireSource *pipewire_source = (GrdPipeWireSource *) source;
-  int result;
-
-  result = pw_loop_iterate (pipewire_source->pipewire_loop, 0);
-  if (result < 0)
-    g_warning ("pipewire_loop_iterate failed: %s", spa_strerror (result));
-
-  return TRUE;
-}
-
-static void
-pipewire_loop_source_finalize (GSource *source)
-{
-  GrdPipeWireSource *pipewire_source = (GrdPipeWireSource *) source;
-
-  pw_loop_leave (pipewire_source->pipewire_loop);
-  pw_loop_destroy (pipewire_source->pipewire_loop);
-}
-
-static GSourceFuncs pipewire_source_funcs =
-{
-  pipewire_loop_source_prepare,
-  NULL,
-  pipewire_loop_source_dispatch,
-  pipewire_loop_source_finalize
-};
-
-static GrdPipeWireSource *
-create_pipewire_source (void)
-{
-  GrdPipeWireSource *pipewire_source;
-
-  pipewire_source =
-    (GrdPipeWireSource *) g_source_new (&pipewire_source_funcs,
-                                        sizeof (GrdPipeWireSource));
-  pipewire_source->pipewire_loop = pw_loop_new (NULL);
-  if (!pipewire_source->pipewire_loop)
-    {
-      g_source_destroy ((GSource *) pipewire_source);
-      return NULL;
-    }
-
-  g_source_add_unix_fd (&pipewire_source->base,
-                        pw_loop_get_fd (pipewire_source->pipewire_loop),
-                        G_IO_IN | G_IO_ERR);
-
-  pw_loop_enter (pipewire_source->pipewire_loop);
-  g_source_attach (&pipewire_source->base, NULL);
-
-  return pipewire_source;
-}
-
 static void
 on_stream_state_changed (void                 *user_data,
                          enum pw_stream_state  old,
@@ -213,6 +147,9 @@ on_stream_param_changed (void                 *user_data,
 
   width = stream->spa_format.size.width;
   height = stream->spa_format.size.height;
+
+  g_debug ("[VNC] Stream parameters changed. New monitor size: [%u, %u]",
+           width, height);
 
   grd_session_vnc_queue_resize_framebuffer (stream->session, width, height);
 
@@ -506,21 +443,6 @@ process_frame_data (GrdVncPipeWireStream *stream,
                                grd_vnc_frame_ref (g_steal_pointer (&frame)),
                                (GDestroyNotify) grd_vnc_frame_unref);
     }
-  else if (buffer->datas[0].type == SPA_DATA_MemPtr)
-    {
-      uint8_t *src_data;
-      int src_stride;
-
-      src_data = buffer->datas[0].data;
-
-      src_stride = buffer->datas[0].chunk->stride;
-      copy_frame_data (frame, src_data,
-                       width, height,
-                       dst_stride, src_stride,
-                       bpp);
-
-      callback (stream, g_steal_pointer (&frame), TRUE, user_data);
-    }
   else
     {
       callback (stream, NULL, FALSE, user_data);
@@ -685,8 +607,9 @@ static const struct pw_stream_events stream_events = {
 };
 
 static void
-add_common_format_params (struct spa_pod_builder *pod_builder,
-                          enum spa_video_format   spa_format)
+add_common_format_params (struct spa_pod_builder     *pod_builder,
+                          enum spa_video_format       spa_format,
+                          const GrdVncVirtualMonitor *virtual_monitor)
 {
   struct spa_rectangle min_rect;
   struct spa_rectangle max_rect;
@@ -707,11 +630,26 @@ add_common_format_params (struct spa_pod_builder *pod_builder,
   spa_pod_builder_add (pod_builder,
                        SPA_FORMAT_VIDEO_format,
                        SPA_POD_Id (spa_format), 0);
-  spa_pod_builder_add (pod_builder,
-                       SPA_FORMAT_VIDEO_size,
-                       SPA_POD_CHOICE_RANGE_Rectangle (&min_rect,
-                                                       &min_rect,
-                                                       &max_rect), 0);
+
+  if (virtual_monitor)
+    {
+      struct spa_rectangle virtual_monitor_rect;
+
+      virtual_monitor_rect = SPA_RECTANGLE (virtual_monitor->width,
+                                            virtual_monitor->height);
+      spa_pod_builder_add (pod_builder,
+                           SPA_FORMAT_VIDEO_size,
+                           SPA_POD_Rectangle (&virtual_monitor_rect), 0);
+    }
+  else
+    {
+      spa_pod_builder_add (pod_builder,
+                           SPA_FORMAT_VIDEO_size,
+                           SPA_POD_CHOICE_RANGE_Rectangle (&min_rect,
+                                                           &min_rect,
+                                                           &max_rect), 0);
+    }
+
   spa_pod_builder_add (pod_builder,
                        SPA_FORMAT_VIDEO_framerate,
                        SPA_POD_Fraction (&SPA_FRACTION (0, 1)), 0);
@@ -723,8 +661,9 @@ add_common_format_params (struct spa_pod_builder *pod_builder,
 }
 
 static gboolean
-connect_to_stream (GrdVncPipeWireStream  *stream,
-                   GError               **error)
+connect_to_stream (GrdVncPipeWireStream        *stream,
+                   const GrdVncVirtualMonitor  *virtual_monitor,
+                   GError                     **error)
 {
   GrdSession *session = GRD_SESSION (stream->session);
   GrdContext *context = grd_session_get_context (session);
@@ -747,7 +686,7 @@ connect_to_stream (GrdVncPipeWireStream  *stream,
   spa_pod_builder_push_object (&pod_builder, &format_frame,
                                SPA_TYPE_OBJECT_Format,
                                SPA_PARAM_EnumFormat);
-  add_common_format_params (&pod_builder, spa_format);
+  add_common_format_params (&pod_builder, spa_format, virtual_monitor);
 
   egl_thread = grd_context_get_egl_thread (context);
   if (egl_thread)
@@ -793,7 +732,7 @@ connect_to_stream (GrdVncPipeWireStream  *stream,
       spa_pod_builder_push_object (&pod_builder, &format_frame,
                                    SPA_TYPE_OBJECT_Format,
                                    SPA_PARAM_EnumFormat);
-      add_common_format_params (&pod_builder, spa_format);
+      add_common_format_params (&pod_builder, spa_format, virtual_monitor);
       params[1] = spa_pod_builder_pop (&pod_builder, &format_frame);
     }
 
@@ -841,27 +780,25 @@ static const struct pw_core_events core_events = {
 };
 
 GrdVncPipeWireStream *
-grd_vnc_pipewire_stream_new (GrdSessionVnc  *session_vnc,
-                             uint32_t        src_node_id,
-                             GError        **error)
+grd_vnc_pipewire_stream_new (GrdSessionVnc               *session_vnc,
+                             uint32_t                     src_node_id,
+                             const GrdVncVirtualMonitor  *virtual_monitor,
+                             GError                     **error)
 {
   g_autoptr (GrdVncPipeWireStream) stream = NULL;
   GrdPipeWireSource *pipewire_source;
   GSource *source;
 
-  grd_maybe_initialize_pipewire ();
-
   stream = g_object_new (GRD_TYPE_VNC_PIPEWIRE_STREAM, NULL);
   stream->session = session_vnc;
   stream->src_node_id = src_node_id;
 
-  pipewire_source = create_pipewire_source ();
+  pw_init (NULL, NULL);
+
+  pipewire_source = grd_attached_pipewire_source_new ("VNC", error);
   if (!pipewire_source)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "Failed to create PipeWire source");
-      return NULL;
-    }
+    return NULL;
+
   stream->pipewire_source = (GSource *) pipewire_source;
 
   stream->pipewire_context = pw_context_new (pipewire_source->pipewire_loop,
@@ -892,7 +829,7 @@ grd_vnc_pipewire_stream_new (GrdSessionVnc  *session_vnc,
                         &core_events,
                         stream);
 
-  if (!connect_to_stream (stream, error))
+  if (!connect_to_stream (stream, virtual_monitor, error))
     return NULL;
 
   return g_steal_pointer (&stream);
@@ -969,6 +906,8 @@ grd_vnc_pipewire_stream_finalize (GObject *object)
 
   g_mutex_clear (&stream->frame_mutex);
 
+  pw_deinit ();
+
   G_OBJECT_CLASS (grd_vnc_pipewire_stream_parent_class)->finalize (object);
 }
 
@@ -991,4 +930,28 @@ grd_vnc_pipewire_stream_class_init (GrdVncPipeWireStreamClass *klass)
                                   0,
                                   NULL, NULL, NULL,
                                   G_TYPE_NONE, 0);
+}
+
+void
+grd_vnc_pipewire_stream_resize (GrdVncPipeWireStream *stream,
+                                GrdVncVirtualMonitor *virtual_monitor)
+{
+  struct spa_rectangle virtual_monitor_rect;
+  uint8_t params_buffer[1024];
+  struct spa_pod_builder pod_builder;
+  const struct spa_pod *params[1];
+
+  virtual_monitor_rect = SPA_RECTANGLE (virtual_monitor->width,
+                                        virtual_monitor->height);
+
+  pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof (params_buffer));
+
+  params[0] = spa_pod_builder_add_object (
+    &pod_builder,
+    SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
+    SPA_FORMAT_VIDEO_size, SPA_POD_Rectangle (&virtual_monitor_rect),
+    0);
+
+  pw_stream_update_params (stream->pipewire_stream,
+                           params, G_N_ELEMENTS (params));
 }

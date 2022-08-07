@@ -25,7 +25,8 @@
 #include <gio/gio.h>
 #include <string.h>
 
-#include "grd-schemas.h"
+#include "grd-context.h"
+#include "grd-credentials.h"
 
 #define GRD_RDP_SCHEMA_ID "org.gnome.desktop.remote-desktop.rdp"
 #define GRD_VNC_SCHEMA_ID "org.gnome.desktop.remote-desktop.vnc"
@@ -43,6 +44,7 @@ enum
   VNC_VIEW_ONLY_CHANGED,
   VNC_AUTH_METHOD_CHANGED,
   VNC_ENCRYPTION_CHANGED,
+  VNC_SCREEN_SHARE_MODE_CHANGED,
 
   N_SIGNALS
 };
@@ -52,6 +54,8 @@ static guint signals[N_SIGNALS];
 struct _GrdSettings
 {
   GObject parent;
+
+  GrdContext *context;
 
   struct {
     GSettings *settings;
@@ -69,6 +73,7 @@ struct _GrdSettings
     gboolean view_only;
     GrdVncAuthMethod auth_method;
     int port;
+    GrdVncScreenShareMode screen_share_mode;
   } vnc;
 };
 
@@ -106,6 +111,12 @@ grd_settings_get_screen_share_mode (GrdSettings *settings)
   return settings->rdp.screen_share_mode;
 }
 
+GrdVncScreenShareMode
+grd_settings_get_vnc_screen_share_mode (GrdSettings *settings)
+{
+  return settings->vnc.screen_share_mode;
+}
+
 char *
 grd_settings_get_rdp_server_cert (GrdSettings *settings)
 {
@@ -118,100 +129,90 @@ grd_settings_get_rdp_server_key (GrdSettings *settings)
   return settings->rdp.server_key;
 }
 
-char *
-grd_settings_get_rdp_username (GrdSettings  *settings,
-                               GError      **error)
+gboolean
+grd_settings_get_rdp_credentials (GrdSettings  *settings,
+                                  char        **out_username,
+                                  char        **out_password,
+                                  GError      **error)
 {
+  GrdContext *context = settings->context;
   const char *test_username_override;
-  g_autofree char *credentials_string = NULL;
-  g_autoptr (GVariant) credentials = NULL;
-  char *username = NULL;
-
-  test_username_override = g_getenv ("GNOME_REMOTE_DESKTOP_TEST_RDP_USERNAME");
-  if (test_username_override)
-    return g_strdup (test_username_override);
-
-  credentials_string = secret_password_lookup_sync (GRD_RDP_CREDENTIALS_SCHEMA,
-                                                    NULL, error,
-                                                    NULL);
-  if (!credentials_string)
-    return NULL;
-
-  credentials = g_variant_parse (NULL, credentials_string, NULL, NULL, NULL);
-  if (!credentials)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-                   "Unable to parse credentials");
-      return NULL;
-    }
-
-  g_variant_lookup (credentials, "username", "s", &username);
-  if (!username)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-                   "Username not set");
-      return NULL;
-    }
-
-  return username;
-}
-
-char *
-grd_settings_get_rdp_password (GrdSettings  *settings,
-                               GError      **error)
-{
   const char *test_password_override;
   g_autofree char *credentials_string = NULL;
   g_autoptr (GVariant) credentials = NULL;
-  char *password = NULL;
+  g_autofree char *username = NULL;
+  g_autofree char *password = NULL;
 
+  test_username_override = g_getenv ("GNOME_REMOTE_DESKTOP_TEST_RDP_USERNAME");
   test_password_override = g_getenv ("GNOME_REMOTE_DESKTOP_TEST_RDP_PASSWORD");
-  if (test_password_override)
-    return g_strdup (test_password_override);
 
-  credentials_string = secret_password_lookup_sync (GRD_RDP_CREDENTIALS_SCHEMA,
-                                                    NULL, error,
-                                                    NULL);
-  if (!credentials_string)
-    return NULL;
+  if (test_username_override && test_password_override)
+    {
+      *out_username = g_strdup (test_username_override);
+      *out_password = g_strdup (test_password_override);
+      return TRUE;
+    }
 
-  credentials = g_variant_parse (NULL, credentials_string, NULL, NULL, NULL);
+  credentials = grd_credentials_lookup (grd_context_get_credentials (context),
+                                        GRD_CREDENTIALS_TYPE_RDP,
+                                        error);
   if (!credentials)
+    return FALSE;
+
+  if (!test_username_override)
     {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-                   "Unable to parse credentials");
-      return NULL;
+      g_variant_lookup (credentials, "username", "s", &username);
+      if (!username)
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                       "Username not set");
+          return FALSE;
+        }
+    }
+  else
+    {
+      username = g_strdup (test_username_override);
     }
 
-  g_variant_lookup (credentials, "password", "s", &password);
-  if (!password)
+  if (!test_password_override)
     {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-                   "Password not set");
-      return NULL;
+      g_variant_lookup (credentials, "password", "s", &password);
+      if (!password)
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                       "Username not set");
+          return FALSE;
+        }
+    }
+  else
+    {
+      password = g_strdup (test_password_override);
     }
 
-  return password;
+  *out_username = g_steal_pointer (&username);
+  *out_password = g_steal_pointer (&password);
+  return TRUE;
 }
 
 char *
 grd_settings_get_vnc_password (GrdSettings  *settings,
                                GError      **error)
 {
+  GrdContext *context = settings->context;
   const char *test_password_override;
-  char *password;
+  g_autoptr (GVariant) password = NULL;
 
   test_password_override = g_getenv ("GNOME_REMOTE_DESKTOP_TEST_VNC_PASSWORD");
   if (test_password_override)
     return g_strdup (test_password_override);
 
-  password = secret_password_lookup_sync (GRD_VNC_PASSWORD_SCHEMA,
-                                          NULL, error,
-                                          NULL);
+  password = grd_credentials_lookup (grd_context_get_credentials (context),
+                                     GRD_CREDENTIALS_TYPE_VNC,
+                                     error);
   if (!password)
     return NULL;
 
-  return password;
+  return g_variant_dup_string (password, NULL);
 }
 
 gboolean
@@ -252,6 +253,13 @@ update_screen_share_mode (GrdSettings *settings)
 {
   settings->rdp.screen_share_mode =
     g_settings_get_enum (settings->rdp.settings, "screen-share-mode");
+}
+
+static void
+update_vnc_screen_share_mode (GrdSettings *settings)
+{
+  settings->vnc.screen_share_mode =
+    g_settings_get_enum (settings->vnc.settings, "screen-share-mode");
 }
 
 static void
@@ -347,6 +355,11 @@ on_vnc_settings_changed (GSettings   *vnc_settings,
       update_vnc_enabled (settings);
       g_signal_emit (settings, signals[VNC_ENABLED_CHANGED], 0);
     }
+  else if (strcmp (key, "screen-share-mode") == 0)
+    {
+      update_vnc_screen_share_mode (settings);
+      g_signal_emit (settings, signals[VNC_SCREEN_SHARE_MODE_CHANGED], 0);
+    }
   else if (strcmp (key, "view-only") == 0)
     {
       update_vnc_view_only (settings);
@@ -357,6 +370,17 @@ on_vnc_settings_changed (GSettings   *vnc_settings,
       update_vnc_auth_method (settings);
       g_signal_emit (settings, signals[VNC_AUTH_METHOD_CHANGED], 0);
     }
+}
+
+GrdSettings *
+grd_settings_new (GrdContext *context)
+{
+  GrdSettings *settings;
+
+  settings = g_object_new (GRD_TYPE_SETTINGS, NULL);
+  settings->context = context;
+
+  return settings;
 }
 
 static void
@@ -391,6 +415,7 @@ grd_settings_init (GrdSettings *settings)
   update_vnc_enabled (settings);
   update_vnc_view_only (settings);
   update_vnc_auth_method (settings);
+  update_vnc_screen_share_mode (settings);
 
   settings->rdp.port = GRD_RDP_SERVER_PORT;
   settings->vnc.port = GRD_VNC_SERVER_PORT;
@@ -454,6 +479,13 @@ grd_settings_class_init (GrdSettingsClass *klass)
                   G_TYPE_NONE, 0);
   signals[VNC_AUTH_METHOD_CHANGED] =
     g_signal_new ("vnc-auth-method-changed",
+                  G_TYPE_FROM_CLASS (klass),
+                  G_SIGNAL_RUN_LAST,
+                  0,
+                  NULL, NULL, NULL,
+                  G_TYPE_NONE, 0);
+  signals[VNC_SCREEN_SHARE_MODE_CHANGED] =
+    g_signal_new ("vnc-screen-share-mode-changed",
                   G_TYPE_FROM_CLASS (klass),
                   G_SIGNAL_RUN_LAST,
                   0,
