@@ -2138,13 +2138,21 @@ grd_session_rdp_new (GrdRdpServer      *rdp_server,
   username = grd_settings_get_rdp_username (settings, &error);
   if (!username)
     {
-      g_warning ("Couldn't retrieve RDP username: %s", error->message);
+      if (error)
+        g_warning ("[RDP] Couldn't retrieve RDP username: %s", error->message);
+      else
+        g_message ("[RDP] Username is not set, denying client");
+
       return NULL;
     }
   password = grd_settings_get_rdp_password (settings, &error);
   if (!password)
     {
-      g_warning ("Couldn't retrieve RDP password: %s", error->message);
+      if (error)
+        g_warning ("[RDP] Couldn't retrieve RDP password: %s", error->message);
+      else
+        g_message ("[RDP] Password is not set, denying client");
+
       g_free (username);
       return NULL;
     }
@@ -2178,6 +2186,21 @@ grd_session_rdp_new (GrdRdpServer      *rdp_server,
   g_free (username);
 
   return g_steal_pointer (&session_rdp);
+}
+
+static void
+clear_session_sources (GrdSessionRdp *session_rdp)
+{
+  if (session_rdp->update_monitor_layout_source)
+    {
+      g_source_destroy (session_rdp->update_monitor_layout_source);
+      g_clear_pointer (&session_rdp->update_monitor_layout_source, g_source_unref);
+    }
+  if (session_rdp->pending_encode_source)
+    {
+      g_source_destroy (session_rdp->pending_encode_source);
+      g_clear_pointer (&session_rdp->pending_encode_source, g_source_unref);
+    }
 }
 
 static gboolean
@@ -2239,12 +2262,7 @@ grd_session_rdp_stop (GrdSession *session)
   g_clear_object (&rdp_peer_context->graphics_pipeline);
 
   g_clear_pointer (&session_rdp->socket_thread, g_thread_join);
-
-  if (session_rdp->update_monitor_layout_source)
-    {
-      g_source_destroy (session_rdp->update_monitor_layout_source);
-      g_clear_pointer (&session_rdp->update_monitor_layout_source, g_source_unref);
-    }
+  clear_session_sources (session_rdp);
 
   peer->Close (peer);
   g_clear_object (&session_rdp->connection);
@@ -2266,7 +2284,7 @@ grd_session_rdp_stop (GrdSession *session)
   g_hash_table_foreach_remove (session_rdp->pressed_unicode_keys,
                                notify_keysym_released,
                                session_rdp);
-  g_clear_object (&session_rdp->rdp_event_queue);
+  grd_rdp_event_queue_flush (session_rdp->rdp_event_queue);
 
   g_clear_pointer (&session_rdp->rdp_surface, grd_rdp_surface_free);
   g_clear_pointer (&session_rdp->monitor_config, grd_rdp_monitor_config_free);
@@ -2417,14 +2435,12 @@ grd_session_rdp_dispose (GObject *object)
 {
   GrdSessionRdp *session_rdp = GRD_SESSION_RDP (object);
 
-  if (session_rdp->pending_encode_source)
-    {
-      g_source_destroy (session_rdp->pending_encode_source);
-      g_clear_pointer (&session_rdp->pending_encode_source, g_source_unref);
-    }
+  clear_session_sources (session_rdp);
 
   g_assert (!session_rdp->graphics_thread);
   g_clear_pointer (&session_rdp->graphics_context, g_main_context_unref);
+
+  g_clear_object (&session_rdp->rdp_event_queue);
 
   g_clear_pointer (&session_rdp->pressed_unicode_keys, g_hash_table_unref);
   g_clear_pointer (&session_rdp->pressed_keys, g_hash_table_unref);
