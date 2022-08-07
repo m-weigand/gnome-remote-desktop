@@ -1,8 +1,8 @@
-gnome-remote-desktop (42.4-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (42.4-1) unstable; urgency=medium
 
   * New upstream release (LP: #1983788)
 
- -- Jeremy Bicha <jbicha@ubuntu.com>  Sun, 07 Aug 2022 16:43:44 -0400
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Sun, 07 Aug 2022 16:46:54 -0400
 
 gnome-remote-desktop (42.3-1) unstable; urgency=medium
 
