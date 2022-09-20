@@ -1,13 +1,15 @@
 gnome-remote-desktop (43.0-1) UNRELEASED; urgency=medium
 
   * New upstream release
-  * debian/control.in: Build-Depend on libtss2-dev
-  * debian/control.in: Build-Depend on asciidoc-base & docbook-xml
   * Don't build audio forwarding feature since fdk-aac isn't in Debian
     or Ubuntu 'main' yet
+  * debian/control.in: Build-Depend on libtss2-dev
+  * debian/control.in: Build-Depend on asciidoc-base & docbook-xml
   * debian/control.in: Bump minimum freerdp to 2.8.0
+  * debian/control.in: Set Rules-Requires-Root: no
+  * Cherry-pick 2 patches to fix crashes
 
- -- Jeremy Bicha <jbicha@ubuntu.com>  Tue, 20 Sep 2022 15:09:16 -0400
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Tue, 20 Sep 2022 15:12:52 -0400
 
 gnome-remote-desktop (42.4-1) unstable; urgency=medium
 
