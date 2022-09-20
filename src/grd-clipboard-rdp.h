@@ -32,7 +32,7 @@ G_DECLARE_FINAL_TYPE (GrdClipboardRdp,
 
 GrdClipboardRdp *grd_clipboard_rdp_new (GrdSessionRdp *session_rdp,
                                         HANDLE         vcm,
-                                        HANDLE         stop_event);
+                                        gboolean       relieve_filename_restriction);
 
 void grd_clipboard_rdp_lock_remote_clipboard_data (GrdClipboardRdp *clipboard_rdp,
                                                    uint32_t         clip_data_id);

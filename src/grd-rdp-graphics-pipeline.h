@@ -30,9 +30,9 @@ G_DECLARE_FINAL_TYPE (GrdRdpGraphicsPipeline, grd_rdp_graphics_pipeline,
                       GRD, RDP_GRAPHICS_PIPELINE, GObject)
 
 GrdRdpGraphicsPipeline *grd_rdp_graphics_pipeline_new (GrdSessionRdp              *session_rdp,
+                                                       GrdRdpDvc                  *rdp_dvc,
                                                        GMainContext               *pipeline_context,
                                                        HANDLE                      vcm,
-                                                       HANDLE                      stop_event,
                                                        rdpContext                 *rdp_context,
                                                        GrdRdpNetworkAutodetection *network_autodetection,
                                                        wStream                    *encode_stream,
@@ -58,8 +58,8 @@ void grd_rdp_graphics_pipeline_reset_graphics (GrdRdpGraphicsPipeline *graphics_
 void grd_rdp_graphics_pipeline_notify_new_round_trip_time (GrdRdpGraphicsPipeline *graphics_pipeline,
                                                            uint64_t                round_trip_time_us);
 
-void grd_rdp_graphics_pipeline_refresh_gfx (GrdRdpGraphicsPipeline *graphics_pipeline,
-                                            GrdRdpSurface          *rdp_surface,
-                                            GrdRdpBuffer           *buffer);
+gboolean grd_rdp_graphics_pipeline_refresh_gfx (GrdRdpGraphicsPipeline *graphics_pipeline,
+                                                GrdRdpSurface          *rdp_surface,
+                                                GrdRdpBuffer           *buffer);
 
 #endif /* GRD_RDP_GRAPHICS_PIPELINE_H */

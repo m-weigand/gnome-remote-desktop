@@ -343,7 +343,7 @@ track_round_trip_time (GrdRdpNetworkAutodetection *network_autodetection,
   RTTInfo *rtt_info;
 
   rtt_info = g_malloc0 (sizeof (RTTInfo));
-  rtt_info->round_trip_time_us = MIN (pong_time_us - ping_time_us, G_USEC_PER_SEC);
+  rtt_info->round_trip_time_us = pong_time_us - ping_time_us;
   rtt_info->response_time_us = pong_time_us;
 
   g_queue_push_tail (network_autodetection->round_trip_times, rtt_info);
@@ -484,7 +484,8 @@ autodetect_rtt_measure_response (rdpContext *rdp_context,
   g_mutex_unlock (&network_autodetection->consumer_mutex);
 
   g_mutex_lock (&network_autodetection->shutdown_mutex);
-  if (!network_autodetection->in_shutdown && has_rtt_consumer_rdpgfx)
+  if (!network_autodetection->in_shutdown && has_rtt_consumer_rdpgfx &&
+      rdp_peer_context->graphics_pipeline)
     {
       grd_rdp_graphics_pipeline_notify_new_round_trip_time (
         rdp_peer_context->graphics_pipeline, avg_round_trip_time_us);

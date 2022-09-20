@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 Pascal Nowack
+ * Copyright (C) 2022 SUSE LLC
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -15,41 +15,20 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
  * 02111-1307, USA.
+ *
+ * Written by:
+ *     Alynx Zhou <alynx.zhou@gmail.com>
  */
 
-#ifndef GRD_RDP_PRIVATE_H
-#define GRD_RDP_PRIVATE_H
+#ifndef GRD_CREDENTIALS_FILE_H
+#define GRD_CREDENTIALS_FILE_H
 
-#include <freerdp/freerdp.h>
+#include "grd-credentials.h"
 
-#include "grd-types.h"
+#define GRD_TYPE_CREDENTIALS_FILE (grd_credentials_file_get_type ())
+G_DECLARE_FINAL_TYPE (GrdCredentialsFile, grd_credentials_file, GRD,
+                      CREDENTIALS_FILE, GrdCredentials)
 
-typedef struct _RdpPeerContext
-{
-  rdpContext rdp_context;
+GrdCredentialsFile * grd_credentials_file_new (GError **error);
 
-  GrdSessionRdp *session_rdp;
-
-  uint32_t frame_id;
-  uint16_t planar_flags;
-
-  RFX_CONTEXT *rfx_context;
-  wStream *encode_stream;
-
-  GrdRdpNetworkAutodetection *network_autodetection;
-
-  /* Virtual Channel Manager */
-  HANDLE vcm;
-
-  GrdRdpDvc *rdp_dvc;
-
-  GMutex channel_mutex;
-
-  GrdClipboardRdp *clipboard_rdp;
-  GrdRdpAudioPlayback *audio_playback;
-  GrdRdpDisplayControl *display_control;
-  GrdRdpGraphicsPipeline *graphics_pipeline;
-  GrdRdpTelemetry *telemetry;
-} RdpPeerContext;
-
-#endif /* GRD_RDP_PRIVATE_H */
+#endif /* GRD_CREDENTIALS_FILE_H */
