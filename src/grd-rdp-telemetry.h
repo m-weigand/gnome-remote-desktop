@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 Pascal Nowack
+ * Copyright (C) 2022 Pascal Nowack
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -17,39 +17,23 @@
  * 02111-1307, USA.
  */
 
-#ifndef GRD_RDP_PRIVATE_H
-#define GRD_RDP_PRIVATE_H
+#ifndef GRD_RDP_TELEMETRY_H
+#define GRD_RDP_TELEMETRY_H
 
-#include <freerdp/freerdp.h>
+#include <freerdp/server/telemetry.h>
+#include <glib-object.h>
 
 #include "grd-types.h"
 
-typedef struct _RdpPeerContext
-{
-  rdpContext rdp_context;
+#define GRD_TYPE_RDP_TELEMETRY (grd_rdp_telemetry_get_type ())
+G_DECLARE_FINAL_TYPE (GrdRdpTelemetry, grd_rdp_telemetry,
+                      GRD, RDP_TELEMETRY, GObject)
 
-  GrdSessionRdp *session_rdp;
+GrdRdpTelemetry *grd_rdp_telemetry_new (GrdSessionRdp *session_rdp,
+                                        GrdRdpDvc     *rdp_dvc,
+                                        HANDLE         vcm,
+                                        rdpContext    *rdp_context);
 
-  uint32_t frame_id;
-  uint16_t planar_flags;
+void grd_rdp_telemetry_maybe_init (GrdRdpTelemetry *telemetry);
 
-  RFX_CONTEXT *rfx_context;
-  wStream *encode_stream;
-
-  GrdRdpNetworkAutodetection *network_autodetection;
-
-  /* Virtual Channel Manager */
-  HANDLE vcm;
-
-  GrdRdpDvc *rdp_dvc;
-
-  GMutex channel_mutex;
-
-  GrdClipboardRdp *clipboard_rdp;
-  GrdRdpAudioPlayback *audio_playback;
-  GrdRdpDisplayControl *display_control;
-  GrdRdpGraphicsPipeline *graphics_pipeline;
-  GrdRdpTelemetry *telemetry;
-} RdpPeerContext;
-
-#endif /* GRD_RDP_PRIVATE_H */
+#endif /* GRD_RDP_TELEMETRY_H */

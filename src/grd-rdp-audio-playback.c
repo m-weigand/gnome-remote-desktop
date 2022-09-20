@@ -24,6 +24,7 @@
 #include "grd-pipewire-utils.h"
 #include "grd-rdp-audio-output-stream.h"
 #include "grd-rdp-dsp.h"
+#include "grd-rdp-dvc.h"
 #include "grd-session-rdp.h"
 
 #define PROTOCOL_TIMEOUT_MS (10 * 1000)
@@ -59,7 +60,6 @@ struct _GrdRdpAudioPlayback
   GObject parent;
 
   RdpsndServerContext *rdpsnd_context;
-  HANDLE stop_event;
   gboolean channel_opened;
   gboolean channel_unavailable;
 
@@ -68,6 +68,7 @@ struct _GrdRdpAudioPlayback
   gboolean subscribed_status;
 
   GrdSessionRdp *session_rdp;
+  GrdRdpDvc *rdp_dvc;
 
   GMutex protocol_timeout_mutex;
   GSource *channel_teardown_source;
@@ -137,13 +138,7 @@ grd_rdp_audio_playback_maybe_init (GrdRdpAudioPlayback *audio_playback)
 {
   RdpsndServerContext *rdpsnd_context;
 
-  if (!audio_playback)
-    return;
-
   if (audio_playback->channel_opened || audio_playback->channel_unavailable)
-    return;
-
-  if (WaitForSingleObject (audio_playback->stop_event, 0) != WAIT_TIMEOUT)
     return;
 
   rdpsnd_context = audio_playback->rdpsnd_context;
@@ -176,6 +171,11 @@ prepare_volume_data (GrdRdpAudioVolumeData *volume_data)
   if (volume_data->audio_muted)
     {
       for (i = 0; i < volume_data->n_volumes; ++i)
+        volume_data->volumes[i] = 0.0f;
+    }
+  else if (volume_data->n_volumes == 0)
+    {
+      for (i = 0; i < N_CHANNELS; ++i)
         volume_data->volumes[i] = 0.0f;
     }
   else if (N_CHANNELS > volume_data->n_volumes)
@@ -441,10 +441,10 @@ rdpsnd_channel_id_assigned (RdpsndServerContext *rdpsnd_context,
   audio_playback->channel_id = channel_id;
 
   audio_playback->dvc_subscription_id =
-    grd_session_rdp_subscribe_dvc_creation_status (audio_playback->session_rdp,
-                                                   channel_id,
-                                                   dvc_creation_status,
-                                                   audio_playback);
+    grd_rdp_dvc_subscribe_dvc_creation_status (audio_playback->rdp_dvc,
+                                               channel_id,
+                                               dvc_creation_status,
+                                               audio_playback);
   audio_playback->subscribed_status = TRUE;
 
   return TRUE;
@@ -643,8 +643,8 @@ encode_thread_func (gpointer data)
 
 GrdRdpAudioPlayback *
 grd_rdp_audio_playback_new (GrdSessionRdp *session_rdp,
+                            GrdRdpDvc     *rdp_dvc,
                             HANDLE         vcm,
-                            HANDLE         stop_event,
                             rdpContext    *rdp_context)
 {
   g_autoptr (GrdRdpAudioPlayback) audio_playback = NULL;
@@ -657,8 +657,8 @@ grd_rdp_audio_playback_new (GrdSessionRdp *session_rdp,
     g_error ("[RDP.AUDIO_PLAYBACK] Failed to create server context");
 
   audio_playback->rdpsnd_context = rdpsnd_context;
-  audio_playback->stop_event = stop_event;
   audio_playback->session_rdp = session_rdp;
+  audio_playback->rdp_dvc = rdp_dvc;
 
   rdpsnd_context->use_dynamic_virtual_channel = TRUE;
   rdpsnd_context->server_formats = server_formats;
@@ -709,9 +709,9 @@ grd_rdp_audio_playback_dispose (GObject *object)
     }
   if (audio_playback->subscribed_status)
     {
-      grd_session_rdp_unsubscribe_dvc_creation_status (audio_playback->session_rdp,
-                                                       audio_playback->channel_id,
-                                                       audio_playback->dvc_subscription_id);
+      grd_rdp_dvc_unsubscribe_dvc_creation_status (audio_playback->rdp_dvc,
+                                                   audio_playback->channel_id,
+                                                   audio_playback->dvc_subscription_id);
       audio_playback->subscribed_status = FALSE;
     }
 

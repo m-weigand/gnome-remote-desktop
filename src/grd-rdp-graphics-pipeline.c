@@ -27,6 +27,7 @@
 #include "grd-hwaccel-nvidia.h"
 #include "grd-rdp-buffer.h"
 #include "grd-rdp-damage-detector.h"
+#include "grd-rdp-dvc.h"
 #include "grd-rdp-frame-info.h"
 #include "grd-rdp-gfx-frame-controller.h"
 #include "grd-rdp-gfx-surface.h"
@@ -34,6 +35,8 @@
 #include "grd-rdp-surface.h"
 #include "grd-session-rdp.h"
 #include "grd-utils.h"
+
+#define PROTOCOL_TIMEOUT_MS (10 * 1000)
 
 #define ENC_TIMES_CHECK_INTERVAL_MS 1000
 #define MAX_TRACKED_ENC_FRAMES 1000
@@ -69,17 +72,23 @@ struct _GrdRdpGraphicsPipeline
   GObject parent;
 
   RdpgfxServerContext *rdpgfx_context;
-  HANDLE stop_event;
   gboolean channel_opened;
   gboolean received_first_cap_sets;
   gboolean initialized;
   uint32_t initial_version;
 
+  uint32_t channel_id;
+  uint32_t dvc_subscription_id;
+  gboolean subscribed_status;
+
   GrdSessionRdp *session_rdp;
+  GrdRdpDvc *rdp_dvc;
   GMainContext *pipeline_context;
   GrdRdpNetworkAutodetection *network_autodetection;
   wStream *encode_stream;
   RFX_CONTEXT *rfx_context;
+
+  GSource *protocol_timeout_source;
 
   GSource *protocol_reset_source;
   GMutex caps_mutex;
@@ -169,6 +178,8 @@ grd_rdp_graphics_pipeline_create_surface (GrdRdpGraphicsPipeline *graphics_pipel
   uint16_t aligned_width;
   uint16_t aligned_height;
 
+  g_debug ("[RDP.RDPGFX] Creating surface with id %u", surface_id);
+
   surface_context = g_malloc0 (sizeof (GfxSurfaceContext));
 
   g_mutex_lock (&graphics_pipeline->gfx_mutex);
@@ -193,7 +204,7 @@ grd_rdp_graphics_pipeline_create_surface (GrdRdpGraphicsPipeline *graphics_pipel
       uint16_t aligned_width_16;
       uint16_t aligned_height_16;
 
-      g_debug ("[RDP.RDPGFX] Creating NVENC session for surface %u", surface_id);
+      g_debug ("[RDP.RDPGFX] Created NVENC session for surface %u", surface_id);
 
       aligned_width_16 = grd_get_aligned_size (surface_width, 16);
       aligned_height_16 = grd_get_aligned_size (surface_height, 16);
@@ -223,9 +234,6 @@ grd_rdp_graphics_pipeline_create_surface (GrdRdpGraphicsPipeline *graphics_pipel
       g_autoptr (GrdRdpGfxSurface) render_surface = NULL;
       GrdRdpGfxSurfaceDescriptor surface_descriptor = {};
 
-      g_debug ("[RDP.RDPGFX] Creating separate render surface for surface %u",
-               surface_id);
-
       surface_descriptor.flags = GRD_RDP_GFX_SURFACE_FLAG_ALIGNED_SIZE |
                                  GRD_RDP_GFX_SURFACE_FLAG_NO_HWACCEL_SESSIONS;
       surface_descriptor.surface_id = get_next_free_surface_id (graphics_pipeline);
@@ -234,6 +242,9 @@ grd_rdp_graphics_pipeline_create_surface (GrdRdpGraphicsPipeline *graphics_pipel
 
       surface_descriptor.aligned_width = aligned_width;
       surface_descriptor.aligned_height = aligned_height;
+
+      g_debug ("[RDP.RDPGFX] Creating separate render surface (id %u) for "
+               "surface %u", surface_descriptor.surface_id, surface_id);
 
       render_surface = grd_rdp_gfx_surface_new (graphics_pipeline,
                                                 &surface_descriptor);
@@ -263,6 +274,8 @@ grd_rdp_graphics_pipeline_delete_surface (GrdRdpGraphicsPipeline *graphics_pipel
   surface_id = grd_rdp_gfx_surface_get_surface_id (gfx_surface);
   codec_context_id = grd_rdp_gfx_surface_get_codec_context_id (gfx_surface);
   surface_serial = grd_rdp_gfx_surface_get_serial (gfx_surface);
+
+  g_debug ("[RDP.RDPGFX] Deleting surface with id %u", surface_id);
 
   g_mutex_lock (&graphics_pipeline->gfx_mutex);
   if (!g_hash_table_lookup_extended (graphics_pipeline->serial_surface_table,
@@ -313,6 +326,23 @@ grd_rdp_graphics_pipeline_delete_surface (GrdRdpGraphicsPipeline *graphics_pipel
   rdpgfx_context->DeleteSurface (rdpgfx_context, &delete_surface);
 }
 
+static GList *
+get_main_surfaces_from_surface_list (GList *surfaces)
+{
+  GList *main_surfaces = NULL;
+  GList *l;
+
+  for (l = surfaces; l; l = l->next)
+    {
+      GrdRdpGfxSurface *gfx_surface = l->data;
+
+      if (!grd_rdp_gfx_surface_is_auxiliary_surface (gfx_surface))
+        main_surfaces = g_list_append (main_surfaces, gfx_surface);
+    }
+
+  return main_surfaces;
+}
+
 void
 grd_rdp_graphics_pipeline_reset_graphics (GrdRdpGraphicsPipeline *graphics_pipeline,
                                           uint32_t                width,
@@ -322,6 +352,7 @@ grd_rdp_graphics_pipeline_reset_graphics (GrdRdpGraphicsPipeline *graphics_pipel
 {
   RdpgfxServerContext *rdpgfx_context = graphics_pipeline->rdpgfx_context;
   RDPGFX_RESET_GRAPHICS_PDU reset_graphics = {0};
+  GList *main_surfaces;
   GList *surfaces;
   GList *l;
 
@@ -333,7 +364,10 @@ grd_rdp_graphics_pipeline_reset_graphics (GrdRdpGraphicsPipeline *graphics_pipel
   g_hash_table_steal_all (graphics_pipeline->surface_table);
   g_mutex_unlock (&graphics_pipeline->gfx_mutex);
 
-  for (l = surfaces; l; l = l->next)
+  main_surfaces = get_main_surfaces_from_surface_list (surfaces);
+  g_list_free (surfaces);
+
+  for (l = main_surfaces; l; l = l->next)
     {
       GrdRdpGfxSurface *gfx_surface = l->data;
       GrdRdpSurface *rdp_surface;
@@ -341,7 +375,7 @@ grd_rdp_graphics_pipeline_reset_graphics (GrdRdpGraphicsPipeline *graphics_pipel
       rdp_surface = grd_rdp_gfx_surface_get_rdp_surface (gfx_surface);
       g_clear_object (&rdp_surface->gfx_surface);
     }
-  g_list_free (surfaces);
+  g_list_free (main_surfaces);
 
   /*
    * width and height refer here to the size of the Graphics Output Buffer
@@ -1028,7 +1062,7 @@ ensure_rtt_receivement (GrdRdpGraphicsPipeline *graphics_pipeline)
                    graphics_pipeline->pipeline_context);
 }
 
-void
+gboolean
 grd_rdp_graphics_pipeline_refresh_gfx (GrdRdpGraphicsPipeline *graphics_pipeline,
                                        GrdRdpSurface          *rdp_surface,
                                        GrdRdpBuffer           *buffer)
@@ -1096,20 +1130,124 @@ grd_rdp_graphics_pipeline_refresh_gfx (GrdRdpGraphicsPipeline *graphics_pipeline
         ensure_rtt_receivement (graphics_pipeline);
       g_mutex_unlock (&graphics_pipeline->gfx_mutex);
     }
+
+  return success;
+}
+
+static void
+dvc_creation_status (gpointer user_data,
+                     int32_t  creation_status)
+{
+  GrdRdpGraphicsPipeline *graphics_pipeline = user_data;
+
+  if (creation_status < 0)
+    {
+      g_warning ("[RDP.RDPGFX] Failed to open channel (CreationStatus %i). "
+                 "Terminating session", creation_status);
+      grd_session_rdp_notify_error (graphics_pipeline->session_rdp,
+                                    GRD_SESSION_RDP_ERROR_BAD_CAPS);
+    }
+}
+
+static BOOL
+rdpgfx_channel_id_assigned (RdpgfxServerContext *rdpgfx_context,
+                            uint32_t             channel_id)
+{
+  GrdRdpGraphicsPipeline *graphics_pipeline = rdpgfx_context->custom;
+
+  g_debug ("[RDP.RDPGFX] DVC channel id assigned to id %u", channel_id);
+  graphics_pipeline->channel_id = channel_id;
+
+  graphics_pipeline->dvc_subscription_id =
+    grd_rdp_dvc_subscribe_dvc_creation_status (graphics_pipeline->rdp_dvc,
+                                               channel_id,
+                                               dvc_creation_status,
+                                               graphics_pipeline);
+  graphics_pipeline->subscribed_status = TRUE;
+
+  return TRUE;
 }
 
 static uint32_t cap_list[] =
 {
-  RDPGFX_CAPVERSION_106,
-  RDPGFX_CAPVERSION_105,
-  RDPGFX_CAPVERSION_104,
-  RDPGFX_CAPVERSION_103,
-  RDPGFX_CAPVERSION_102,
-  RDPGFX_CAPVERSION_101,
-  RDPGFX_CAPVERSION_10,
-  RDPGFX_CAPVERSION_81,
-  RDPGFX_CAPVERSION_8,
+  RDPGFX_CAPVERSION_107, /* [MS-RDPEGFX] 2.2.3.10 */
+  RDPGFX_CAPVERSION_106, /* [MS-RDPEGFX] 2.2.3.9 */
+  RDPGFX_CAPVERSION_105, /* [MS-RDPEGFX] 2.2.3.8 */
+  RDPGFX_CAPVERSION_104, /* [MS-RDPEGFX] 2.2.3.7 */
+  RDPGFX_CAPVERSION_103, /* [MS-RDPEGFX] 2.2.3.6 */
+  RDPGFX_CAPVERSION_102, /* [MS-RDPEGFX] 2.2.3.5 */
+  RDPGFX_CAPVERSION_101, /* [MS-RDPEGFX] 2.2.3.4 */
+  RDPGFX_CAPVERSION_10,  /* [MS-RDPEGFX] 2.2.3.3 */
+  RDPGFX_CAPVERSION_81,  /* [MS-RDPEGFX] 2.2.3.2 */
+  RDPGFX_CAPVERSION_8,   /* [MS-RDPEGFX] 2.2.3.1 */
 };
+
+static const char *
+rdpgfx_caps_version_to_string (uint32_t caps_version)
+{
+  switch (caps_version)
+    {
+    case RDPGFX_CAPVERSION_107:
+      return "RDPGFX_CAPVERSION_107";
+    case RDPGFX_CAPVERSION_106:
+      return "RDPGFX_CAPVERSION_106";
+    case RDPGFX_CAPVERSION_105:
+      return "RDPGFX_CAPVERSION_105";
+    case RDPGFX_CAPVERSION_104:
+      return "RDPGFX_CAPVERSION_104";
+    case RDPGFX_CAPVERSION_103:
+      return "RDPGFX_CAPVERSION_103";
+    case RDPGFX_CAPVERSION_102:
+      return "RDPGFX_CAPVERSION_102";
+    case RDPGFX_CAPVERSION_101:
+      return "RDPGFX_CAPVERSION_101";
+    case RDPGFX_CAPVERSION_10:
+      return "RDPGFX_CAPVERSION_10";
+    case RDPGFX_CAPVERSION_81:
+      return "RDPGFX_CAPVERSION_81";
+    case RDPGFX_CAPVERSION_8:
+      return "RDPGFX_CAPVERSION_8";
+    default:
+      g_assert_not_reached ();
+    }
+
+  return NULL;
+}
+
+static void
+search_and_list_unknown_cap_sets_versions_and_flags (RDPGFX_CAPSET *cap_sets,
+                                                     uint16_t       n_cap_sets)
+{
+  uint16_t i;
+  size_t j;
+
+  for (i = 0; i < n_cap_sets; ++i)
+    {
+      gboolean cap_found = FALSE;
+
+      for (j = 0; j < G_N_ELEMENTS (cap_list) && !cap_found; ++j)
+        {
+          const char *version_string;
+          gboolean has_flags_field;
+
+          if (cap_sets[i].version != cap_list[j])
+            continue;
+
+          cap_found = TRUE;
+          has_flags_field = cap_sets[i].version != RDPGFX_CAPVERSION_101;
+
+          version_string = rdpgfx_caps_version_to_string (cap_sets[i].version);
+          g_debug ("[RDP.RDPGFX] Client caps set %s flags: 0x%08X%s",
+                   version_string, cap_sets[i].flags,
+                   has_flags_field ? "" : " (invalid flags field)");
+        }
+      if (!cap_found)
+        {
+          g_debug ("[RDP.RDPGFX] Received unknown capability set with "
+                   "version 0x%08X", cap_sets[i].version);
+        }
+    }
+}
 
 static gboolean
 cap_sets_contains_supported_version (RDPGFX_CAPSET *cap_sets,
@@ -1150,6 +1288,7 @@ cap_sets_would_disable_avc (RDPGFX_CAPSET *cap_sets,
 
               switch (cap_sets[j].version)
                 {
+                case RDPGFX_CAPVERSION_107:
                 case RDPGFX_CAPVERSION_106:
                 case RDPGFX_CAPVERSION_105:
                 case RDPGFX_CAPVERSION_104:
@@ -1186,6 +1325,8 @@ rdpgfx_caps_advertise (RdpgfxServerContext             *rdpgfx_context,
   GrdSessionRdp *session_rdp = graphics_pipeline->session_rdp;
 
   g_debug ("[RDP.RDPGFX] Received a CapsAdvertise PDU");
+  search_and_list_unknown_cap_sets_versions_and_flags (caps_advertise->capsSets,
+                                                       caps_advertise->capsSetCount);
 
   if (graphics_pipeline->initialized &&
       graphics_pipeline->initial_version < RDPGFX_CAPVERSION_103)
@@ -1392,40 +1533,55 @@ rdpgfx_qoe_frame_acknowledge (RdpgfxServerContext                    *rdpgfx_con
   return CHANNEL_RC_OK;
 }
 
+static gboolean
+initiate_session_teardown (gpointer user_data)
+{
+  GrdRdpGraphicsPipeline *graphics_pipeline = user_data;
+
+  g_warning ("[RDP.RDPGFX] Client did not respond to protocol initiation. "
+             "Terminating session");
+
+  g_clear_pointer (&graphics_pipeline->protocol_timeout_source, g_source_unref);
+
+  grd_session_rdp_notify_error (graphics_pipeline->session_rdp,
+                                GRD_SESSION_RDP_ERROR_BAD_CAPS);
+
+  return G_SOURCE_REMOVE;
+}
+
 void
 grd_rdp_graphics_pipeline_maybe_init (GrdRdpGraphicsPipeline *graphics_pipeline)
 {
   RdpgfxServerContext *rdpgfx_context;
 
-  if (!graphics_pipeline)
-    return;
-
   if (graphics_pipeline->channel_opened)
-    return;
-
-  if (WaitForSingleObject (graphics_pipeline->stop_event, 0) == WAIT_OBJECT_0)
     return;
 
   rdpgfx_context = graphics_pipeline->rdpgfx_context;
   if (!rdpgfx_context->Open (rdpgfx_context))
     {
-      g_warning ("[RDP.RDPGFX] Failed to open Graphics Pipeline. The client "
-                 "probably falsely advertised GFX support");
+      g_warning ("[RDP.RDPGFX] Failed to open channel. Terminating session");
       grd_session_rdp_notify_error (graphics_pipeline->session_rdp,
                                     GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
       return;
     }
-
   graphics_pipeline->channel_opened = TRUE;
 
-  return;
+  g_assert (!graphics_pipeline->protocol_timeout_source);
+
+  graphics_pipeline->protocol_timeout_source =
+    g_timeout_source_new (PROTOCOL_TIMEOUT_MS);
+  g_source_set_callback (graphics_pipeline->protocol_timeout_source,
+                         initiate_session_teardown, graphics_pipeline, NULL);
+  g_source_attach (graphics_pipeline->protocol_timeout_source,
+                   graphics_pipeline->pipeline_context);
 }
 
 GrdRdpGraphicsPipeline *
 grd_rdp_graphics_pipeline_new (GrdSessionRdp              *session_rdp,
+                               GrdRdpDvc                  *rdp_dvc,
                                GMainContext               *pipeline_context,
                                HANDLE                      vcm,
-                               HANDLE                      stop_event,
                                rdpContext                 *rdp_context,
                                GrdRdpNetworkAutodetection *network_autodetection,
                                wStream                    *encode_stream,
@@ -1440,13 +1596,14 @@ grd_rdp_graphics_pipeline_new (GrdSessionRdp              *session_rdp,
     g_error ("[RDP.RDPGFX] Failed to create server context");
 
   graphics_pipeline->rdpgfx_context = rdpgfx_context;
-  graphics_pipeline->stop_event = stop_event;
   graphics_pipeline->session_rdp = session_rdp;
+  graphics_pipeline->rdp_dvc = rdp_dvc;
   graphics_pipeline->pipeline_context = pipeline_context;
   graphics_pipeline->network_autodetection = network_autodetection;
   graphics_pipeline->encode_stream = encode_stream;
   graphics_pipeline->rfx_context = rfx_context;
 
+  rdpgfx_context->ChannelIdAssigned = rdpgfx_channel_id_assigned;
   rdpgfx_context->CapsAdvertise = rdpgfx_caps_advertise;
   rdpgfx_context->CacheImportOffer = rdpgfx_cache_import_offer;
   rdpgfx_context->FrameAcknowledge = rdpgfx_frame_acknowledge;
@@ -1466,6 +1623,7 @@ grd_rdp_graphics_pipeline_new (GrdSessionRdp              *session_rdp,
 static void
 reset_graphics_pipeline (GrdRdpGraphicsPipeline *graphics_pipeline)
 {
+  GList *main_surfaces;
   GList *surfaces;
   GList *l;
 
@@ -1478,7 +1636,10 @@ reset_graphics_pipeline (GrdRdpGraphicsPipeline *graphics_pipeline)
                                frame_serial_free, graphics_pipeline);
   g_mutex_unlock (&graphics_pipeline->gfx_mutex);
 
-  for (l = surfaces; l; l = l->next)
+  main_surfaces = get_main_surfaces_from_surface_list (surfaces);
+  g_list_free (surfaces);
+
+  for (l = main_surfaces; l; l = l->next)
     {
       GrdRdpGfxSurface *gfx_surface = l->data;
       GrdRdpSurface *rdp_surface;
@@ -1486,7 +1647,7 @@ reset_graphics_pipeline (GrdRdpGraphicsPipeline *graphics_pipeline)
       rdp_surface = grd_rdp_gfx_surface_get_rdp_surface (gfx_surface);
       g_clear_object (&rdp_surface->gfx_surface);
     }
-  g_list_free (surfaces);
+  g_list_free (main_surfaces);
 
   g_mutex_lock (&graphics_pipeline->gfx_mutex);
   graphics_pipeline->frame_acks_suspended = FALSE;
@@ -1511,13 +1672,24 @@ grd_rdp_graphics_pipeline_dispose (GObject *object)
       graphics_pipeline->rdpgfx_context->Close (graphics_pipeline->rdpgfx_context);
       graphics_pipeline->channel_opened = FALSE;
     }
+  if (graphics_pipeline->subscribed_status)
+    {
+      grd_rdp_dvc_unsubscribe_dvc_creation_status (graphics_pipeline->rdp_dvc,
+                                                   graphics_pipeline->channel_id,
+                                                   graphics_pipeline->dvc_subscription_id);
+      graphics_pipeline->subscribed_status = FALSE;
+    }
 
+  if (graphics_pipeline->protocol_timeout_source)
+    {
+      g_source_destroy (graphics_pipeline->protocol_timeout_source);
+      g_clear_pointer (&graphics_pipeline->protocol_timeout_source, g_source_unref);
+    }
   if (graphics_pipeline->rtt_pause_source)
     {
       g_source_destroy (graphics_pipeline->rtt_pause_source);
       g_clear_pointer (&graphics_pipeline->rtt_pause_source, g_source_unref);
     }
-
   if (graphics_pipeline->protocol_reset_source)
     {
       g_source_destroy (graphics_pipeline->protocol_reset_source);
@@ -1562,36 +1734,6 @@ grd_rdp_graphics_pipeline_finalize (GObject *object)
   G_OBJECT_CLASS (grd_rdp_graphics_pipeline_parent_class)->finalize (object);
 }
 
-static const char *
-rdpgfx_caps_version_to_string (uint32_t caps_version)
-{
-  switch (caps_version)
-    {
-    case RDPGFX_CAPVERSION_106:
-      return "RDPGFX_CAPVERSION_106";
-    case RDPGFX_CAPVERSION_105:
-      return "RDPGFX_CAPVERSION_105";
-    case RDPGFX_CAPVERSION_104:
-      return "RDPGFX_CAPVERSION_104";
-    case RDPGFX_CAPVERSION_103:
-      return "RDPGFX_CAPVERSION_103";
-    case RDPGFX_CAPVERSION_102:
-      return "RDPGFX_CAPVERSION_102";
-    case RDPGFX_CAPVERSION_101:
-      return "RDPGFX_CAPVERSION_101";
-    case RDPGFX_CAPVERSION_10:
-      return "RDPGFX_CAPVERSION_10";
-    case RDPGFX_CAPVERSION_81:
-      return "RDPGFX_CAPVERSION_81";
-    case RDPGFX_CAPVERSION_8:
-      return "RDPGFX_CAPVERSION_8";
-    default:
-      g_assert_not_reached ();
-    }
-
-  return NULL;
-}
-
 static gboolean
 test_caps_version (GrdRdpGraphicsPipeline *graphics_pipeline,
                    RDPGFX_CAPSET          *cap_sets,
@@ -1611,6 +1753,7 @@ test_caps_version (GrdRdpGraphicsPipeline *graphics_pipeline,
 
           switch (caps_version)
             {
+            case RDPGFX_CAPVERSION_107:
             case RDPGFX_CAPVERSION_106:
             case RDPGFX_CAPVERSION_105:
             case RDPGFX_CAPVERSION_104:
@@ -1676,6 +1819,12 @@ reset_protocol (gpointer user_data)
       g_free (cap_sets);
 
       return G_SOURCE_CONTINUE;
+    }
+
+  if (graphics_pipeline->protocol_timeout_source)
+    {
+      g_source_destroy (graphics_pipeline->protocol_timeout_source);
+      g_clear_pointer (&graphics_pipeline->protocol_timeout_source, g_source_unref);
     }
 
   for (i = 0; i < G_N_ELEMENTS (cap_list); ++i)

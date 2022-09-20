@@ -1,6 +1,6 @@
 project('gnome-remote-desktop', 'c',
-        version: '43.beta',
-        meson_version: '>= 0.47.0',
+        version: '43.0',
+        meson_version: '>= 0.57.0',
         default_options: ['warning_level=1',
                           'buildtype=debugoptimized'])
 
@@ -92,7 +92,7 @@ configinc = include_directories('.')
 servicedir = get_option('systemd_user_unit_dir')
 if systemd_dep.found()
   if servicedir == ''
-    servicedir = systemd_dep.get_pkgconfig_variable('systemduserunitdir')
+    servicedir = systemd_dep.get_variable(pkgconfig: 'systemduserunitdir')
   endif
 
   if servicedir == ''
@@ -112,7 +112,9 @@ if get_option('man')
   subdir('man')
 endif
 
-meson.add_install_script('meson_post_install.py')
+gnome.post_install(
+  glib_compile_schemas: true,
+)
 
 output = [
   '',
@@ -135,7 +137,7 @@ output = [
   '',
   '        Support for audio output redirection using FDK AAC........' + have_fdk_aac.to_string(),
   '',
-  '  Now type \'ninja -C ' + meson.build_root() + '\' to build ' + meson.project_name(),
+  '  Now type \'ninja -C ' + meson.project_build_root() + '\' to build ' + meson.project_name(),
   '',
   '',
 ]

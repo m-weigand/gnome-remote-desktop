@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "grd-clipboard-rdp.h"
+#include "grd-utils.h"
 
 #define CLIP_DATA_ENTRY_DROP_TIMEOUT_MS (60 * 1000)
 #define CLIP_DATA_ENTRY_DROP_TIMEOUT_DELTA_US (10 * G_USEC_PER_SEC)
@@ -123,8 +124,8 @@ struct _GrdRdpFuseClipboard
 
   GThread *fuse_thread;
   struct fuse_session *fuse_handle;
-  HANDLE start_event;
-  HANDLE stop_event;
+  GrdSyncPoint sync_point_start;
+  GrdSyncPoint sync_point_stop;
 
   GSource *timeout_reset_source;
   GHashTable *timeouts_to_reset;
@@ -578,6 +579,9 @@ is_fuse_file_parent (gpointer key,
 {
   FuseFile *fuse_file = value;
   const char *parent_path = user_data;
+
+  if (!fuse_file->is_directory)
+    return FALSE;
 
   if (strcmp (parent_path, fuse_file->filename_with_root) == 0)
     return TRUE;
@@ -1331,7 +1335,7 @@ fuse_thread_func (gpointer data)
 
   fuse_daemonize (1);
 
-  SetEvent (rdp_fuse_clipboard->start_event);
+  grd_sync_point_complete (&rdp_fuse_clipboard->sync_point_start, TRUE);
 
   g_debug ("[FUSE Clipboard] Starting FUSE session");
   result = fuse_session_loop (rdp_fuse_clipboard->fuse_handle);
@@ -1341,7 +1345,7 @@ fuse_thread_func (gpointer data)
   g_debug ("[FUSE Clipboard] Unmounting FUSE filesystem");
   fuse_session_unmount (rdp_fuse_clipboard->fuse_handle);
 
-  WaitForSingleObject (rdp_fuse_clipboard->stop_event, INFINITE);
+  grd_sync_point_wait_for_completion (&rdp_fuse_clipboard->sync_point_stop);
   g_clear_pointer (&rdp_fuse_clipboard->fuse_handle, fuse_session_destroy);
 
   return NULL;
@@ -1357,16 +1361,13 @@ grd_rdp_fuse_clipboard_new (GrdClipboardRdp *clipboard_rdp,
   rdp_fuse_clipboard->clipboard_rdp = clipboard_rdp;
   rdp_fuse_clipboard->mount_path = g_strdup (mount_path);
 
-  rdp_fuse_clipboard->start_event = CreateEvent (NULL, TRUE, FALSE, NULL);
-  rdp_fuse_clipboard->stop_event = CreateEvent (NULL, TRUE, FALSE, NULL);
   rdp_fuse_clipboard->fuse_thread = g_thread_new ("RDP FUSE clipboard thread",
                                                   fuse_thread_func,
                                                   rdp_fuse_clipboard);
   if (!rdp_fuse_clipboard->fuse_thread)
     g_error ("[FUSE Clipboard] Failed to create FUSE thread");
 
-  WaitForSingleObject (rdp_fuse_clipboard->start_event, INFINITE);
-  g_clear_pointer (&rdp_fuse_clipboard->start_event, CloseHandle);
+  grd_sync_point_wait_for_completion (&rdp_fuse_clipboard->sync_point_start);
 
   return rdp_fuse_clipboard;
 }
@@ -1401,14 +1402,13 @@ grd_rdp_fuse_clipboard_dispose (GObject *object)
       struct stat attr;
 
       g_assert (rdp_fuse_clipboard->fuse_handle);
-      g_assert (!rdp_fuse_clipboard->start_event);
 
       clear_all_selections (rdp_fuse_clipboard);
 
       g_debug ("[FUSE Clipboard] Stopping FUSE thread");
       fuse_session_exit (rdp_fuse_clipboard->fuse_handle);
       dismiss_all_requests (rdp_fuse_clipboard);
-      SetEvent (rdp_fuse_clipboard->stop_event);
+      grd_sync_point_complete (&rdp_fuse_clipboard->sync_point_stop, TRUE);
 
       /**
        * FUSE does not immediately stop the session after fuse_session_exit() has
@@ -1423,7 +1423,6 @@ grd_rdp_fuse_clipboard_dispose (GObject *object)
       g_debug ("[FUSE Clipboard] Waiting on FUSE thread");
       g_clear_pointer (&rdp_fuse_clipboard->fuse_thread, g_thread_join);
       g_debug ("[FUSE Clipboard] FUSE thread stopped");
-      g_clear_pointer (&rdp_fuse_clipboard->stop_event, CloseHandle);
     }
 
   g_clear_pointer (&rdp_fuse_clipboard->mount_path, g_free);
@@ -1445,6 +1444,9 @@ static void
 grd_rdp_fuse_clipboard_finalize (GObject *object)
 {
   GrdRdpFuseClipboard *rdp_fuse_clipboard = GRD_RDP_FUSE_CLIPBOARD (object);
+
+  grd_sync_point_clear (&rdp_fuse_clipboard->sync_point_stop);
+  grd_sync_point_clear (&rdp_fuse_clipboard->sync_point_start);
 
   g_mutex_clear (&rdp_fuse_clipboard->selection_mutex);
   g_mutex_clear (&rdp_fuse_clipboard->filesystem_mutex);
@@ -1471,7 +1473,7 @@ fuse_file_new_root (void)
   FuseFile *root_dir;
 
   root_dir = g_malloc0 (sizeof (FuseFile));
-  root_dir->filename_with_root = strdup ("/");
+  root_dir->filename_with_root = g_strdup ("/");
   root_dir->filename = root_dir->filename_with_root;
   root_dir->ino = FUSE_ROOT_ID;
   root_dir->is_directory = TRUE;
@@ -1554,6 +1556,9 @@ grd_rdp_fuse_clipboard_init (GrdRdpFuseClipboard *rdp_fuse_clipboard)
 
   g_mutex_init (&rdp_fuse_clipboard->filesystem_mutex);
   g_mutex_init (&rdp_fuse_clipboard->selection_mutex);
+
+  grd_sync_point_init (&rdp_fuse_clipboard->sync_point_start);
+  grd_sync_point_init (&rdp_fuse_clipboard->sync_point_stop);
 
   timeout_reset_source = g_source_new (&timeout_reset_source_funcs,
                                        sizeof (GSource));
