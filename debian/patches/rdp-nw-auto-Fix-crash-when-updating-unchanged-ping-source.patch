@@ -1,0 +1,46 @@
+From: Pascal Nowack <Pascal.Nowack@gmx.de>
+Date: Tue, 13 Sep 2022 07:18:13 +0200
+Subject: rdp/nw-auto: Fix crash when updating unchanged ping source
+
+Commit 51e94ba8dfaa3d6daf31cb982e40e4e0439acb71 fixed an issue, where
+the ping source was attempted to be created, when it already existed,
+as gnome-remote-desktop previously assumed, that every update of the
+RTT consumers and RTT consumer necessities will always change the ping
+source.
+Commit 351893fac77dea21a44fc44508ba2eefe1d1af4a accidentally broke that
+behaviour by always assuming again, that updating the ping source will
+always change the ping source itself.
+However, this time, the situation is different. Since the former commit
+added an assertion to not create a ping source again, when it already
+exists, gnome-remote-desktop crashes, due to invalid behaviour (which
+also made this issue discoverable).
+
+Fix this situation again by checking again, whether an update of the
+ping source is needed.
+Due to the latter commit, the initial ping source should be created, as
+that commit introduced another state for the ping interval recognizing
+it to be non-existent.
+
+Fixes: https://errors.ubuntu.com/problem/4d8b5efdf8ade96d4019c6b7cb92649f660e9fe9
+(cherry picked from commit 3c692112507561467e04beac7181cd6fd459756a)
+---
+ src/grd-rdp-network-autodetection.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/grd-rdp-network-autodetection.c b/src/grd-rdp-network-autodetection.c
+index 2eb1b46..4621393 100644
+--- a/src/grd-rdp-network-autodetection.c
++++ b/src/grd-rdp-network-autodetection.c
+@@ -183,8 +183,10 @@ update_ping_source (GrdRdpNetworkAutodetection *network_autodetection)
+   else
+     new_ping_interval_type = PING_INTERVAL_LOW;
+ 
+-  if (network_autodetection->ping_interval != new_ping_interval_type &&
+-      network_autodetection->ping_source)
++  if (network_autodetection->ping_interval == new_ping_interval_type)
++    return;
++
++  if (network_autodetection->ping_source)
+     {
+       g_source_destroy (network_autodetection->ping_source);
+       g_clear_pointer (&network_autodetection->ping_source, g_source_unref);

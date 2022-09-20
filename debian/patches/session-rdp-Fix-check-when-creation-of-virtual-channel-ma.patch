@@ -1,0 +1,32 @@
+From: Pascal Nowack <Pascal.Nowack@gmx.de>
+Date: Fri, 9 Sep 2022 10:12:47 +0200
+Subject: session-rdp: Fix check when creation of virtual channel manager
+ fails
+
+WTSOpenServerA() returns INVALID_HANDLE_VALUE, which is not NULL, when
+the creation of the virtual channel manager fails.
+Since NULL is an invalid value here too, check against that value too.
+This is what the sample server implementations in FreeRDP also do.
+
+Fixes: https://errors.ubuntu.com/problem/4b04e96f4f5f92ed74e814927dadeab1fba5fbdd
+(cherry picked from commit dbfc75af85cdb9b0d44383b009f3a12b73961155)
+---
+ src/grd-session-rdp.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/grd-session-rdp.c b/src/grd-session-rdp.c
+index 891c95e..674ce33 100644
+--- a/src/grd-session-rdp.c
++++ b/src/grd-session-rdp.c
+@@ -1967,9 +1967,9 @@ rdp_peer_context_new (freerdp_peer   *peer,
+   rdp_peer_context->planar_flags |= PLANAR_FORMAT_HEADER_RLE;
+ 
+   rdp_peer_context->vcm = WTSOpenServerA ((LPSTR) peer->context);
+-  if (!rdp_peer_context->vcm)
++  if (!rdp_peer_context->vcm || rdp_peer_context->vcm == INVALID_HANDLE_VALUE)
+     {
+-      g_warning ("[RDP] Failed to retrieve VCM handle");
++      g_warning ("[RDP] Failed to create virtual channel manager");
+       rdp_peer_context_free (peer, rdp_peer_context);
+       return FALSE;
+     }
