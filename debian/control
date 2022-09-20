@@ -31,6 +31,7 @@ Build-Depends: debhelper-compat (= 13),
                meson (>= 0.47.0),
                systemd,
 Standards-Version: 4.6.0
+Rules-Requires-Root: no
 Vcs-Browser: https://salsa.debian.org/gnome-team/gnome-remote-desktop
 Vcs-Git: https://salsa.debian.org/gnome-team/gnome-remote-desktop.git
 Homepage: https://wiki.gnome.org/Projects/Mutter/RemoteDesktop
