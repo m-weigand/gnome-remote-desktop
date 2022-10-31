@@ -1,3 +1,9 @@
+gnome-remote-desktop (43.1-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Mon, 31 Oct 2022 10:31:50 +0100
+
 gnome-remote-desktop (43.0-2) unstable; urgency=medium
 
   * Update mutter dependency for mutter 43
