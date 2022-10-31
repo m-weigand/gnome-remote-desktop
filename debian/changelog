@@ -1,8 +1,9 @@
-gnome-remote-desktop (43.1-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (43.1-1) unstable; urgency=medium
 
-  * New upstream release
+  * New upstream release (LP: #1995245)
+  * Drop all patches: applied in new release
 
- -- Jeremy Bicha <jbicha@ubuntu.com>  Mon, 31 Oct 2022 10:31:50 +0100
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Mon, 31 Oct 2022 10:38:58 +0100
 
 gnome-remote-desktop (43.0-2) unstable; urgency=medium
 
