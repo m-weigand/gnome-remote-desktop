@@ -1749,8 +1749,9 @@ rdp_peer_capabilities (freerdp_peer *peer)
       session_rdp->monitor_config->monitor_count = 1;
     }
 
-  if (rdp_settings->SupportGraphicsPipeline || rdp_settings->RemoteFxCodec ||
-      rdp_settings->NSCodec)
+  if ((rdp_settings->SupportGraphicsPipeline || rdp_settings->RemoteFxCodec ||
+       rdp_settings->NSCodec) &&
+      rdp_settings->ColorDepth != 32)
     {
       g_debug ("[RDP] Fixing invalid colour depth set by client");
       rdp_settings->ColorDepth = 32;
@@ -1920,7 +1921,8 @@ rdp_peer_context_free (freerdp_peer   *peer,
 
   g_clear_object (&rdp_peer_context->rdp_dvc);
 
-  g_clear_pointer (&rdp_peer_context->vcm, WTSCloseServer);
+  if (rdp_peer_context->vcm != INVALID_HANDLE_VALUE)
+    g_clear_pointer (&rdp_peer_context->vcm, WTSCloseServer);
 
   if (rdp_peer_context->encode_stream)
     {
@@ -1967,9 +1969,9 @@ rdp_peer_context_new (freerdp_peer   *peer,
   rdp_peer_context->planar_flags |= PLANAR_FORMAT_HEADER_RLE;
 
   rdp_peer_context->vcm = WTSOpenServerA ((LPSTR) peer->context);
-  if (!rdp_peer_context->vcm)
+  if (!rdp_peer_context->vcm || rdp_peer_context->vcm == INVALID_HANDLE_VALUE)
     {
-      g_warning ("[RDP] Failed to retrieve VCM handle");
+      g_warning ("[RDP] Failed to create virtual channel manager");
       rdp_peer_context_free (peer, rdp_peer_context);
       return FALSE;
     }
