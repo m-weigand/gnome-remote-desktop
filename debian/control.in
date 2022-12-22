@@ -21,7 +21,6 @@ Build-Depends: debhelper-compat (= 13),
                libpipewire-0.3-dev,
                libsecret-1-dev,
                libtss2-dev,
-               libvncserver-dev,
                libwinpr2-dev (>= 2.3.0),
                libxkbcommon-dev (>= 1.0.0),
                meson (>= 0.47.0),
@@ -42,6 +41,6 @@ Depends: ${misc:Depends},
          pipewire-media-session | wireplumber,
 Breaks: gnome-control-center (<< 1:42)
 Description: Remote desktop daemon for GNOME using PipeWire
- This daemon enables GNOME to offer remote desktop sharing using VNC
- with PipeWire. It supports both GNOME on X and GNOME on Wayland.
+ This daemon enables GNOME to offer remote desktop sharing and control
+ using RDP with PipeWire. It supports GNOME on both X11 and Wayland.
  Remote sharing can be enabled and managed in the GNOME Settings app.
