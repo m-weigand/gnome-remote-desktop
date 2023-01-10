@@ -1,35 +1,32 @@
-# Dutch translation for gnome-remote-desktop.master
-# Copyright (C) 2021 gnome-remote-desktop.master
-# This file is distributed under the same license as the gnome-remote-desktop.master package.
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
 #
-# Marcia van den Hout <mvdh1176@gmail.com>, 2021.
-# Hannie Dumoleyn <hannie@ubuntu-nl.org>, 2021.
-# Nathan Follens <nfollens@gnome.org>, 2021-2022.
-# Philip Goto <philip.goto@gmail.com>, 2022.
 msgid ""
 msgstr ""
-"Project-Id-Version: gnome-remote-desktop.master\n"
+"Project-Id-Version: \n"
 "Report-Msgid-Bugs-To: https://gitlab.gnome.org/GNOME/gnome-remote-desktop/"
 "issues\n"
-"POT-Creation-Date: 2022-11-08 16:56+0000\n"
-"PO-Revision-Date: 2022-11-01 23:06+0100\n"
-"Last-Translator: Nathan Follens <nfollens@gnome.org>\n"
-"Language-Team: Dutch <gnome-nl-list@gnome.org>\n"
-"Language: nl\n"
+"POT-Creation-Date: 2022-12-18 17:52+0700\n"
+"PO-Revision-Date: 2022-12-18 18:00+0700\n"
+"Language-Team: \n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
+"X-Generator: Poedit 1.8.12\n"
+"Last-Translator: OIS <mistresssilvara@hotmail.com>\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
-"X-Generator: Poedit 3.1.1\n"
+"Language: ie\n"
 
 #: src/grd-daemon.c:503
 msgid "GNOME Remote Desktop"
-msgstr "Gnome Extern bureaublad"
+msgstr "Lontan pupitre de GNOME"
 
 #: src/grd-prompt.c:124
 #, c-format
 msgid "Do you want to share your desktop?"
-msgstr "Wilt u uw bureaublad delen?"
+msgstr "Esque vu vole partir vor pupitre?"
 
 #: src/grd-prompt.c:125
 #, c-format
@@ -37,25 +34,24 @@ msgid ""
 "A user on the computer '%s' is trying to remotely view or control your "
 "desktop."
 msgstr ""
-"Een gebruiker op computer ‘%s’ probeert uw bureaublad op afstand te bekijken "
-"of te bedienen."
+"Un usator sur li computator «%s» prova vider o telecomandar vor pupitre."
 
 #: src/grd-prompt.c:131
 msgid "Refuse"
-msgstr "Weigeren"
+msgstr "Refusar"
 
 #: src/grd-prompt.c:136
 msgid "Accept"
-msgstr "Accepteren"
+msgstr "Acceptar"
 
 #: src/grd-ctl.c:53
 #, c-format
 msgid "Usage: %s [OPTIONS...] COMMAND [SUBCOMMAND]...\n"
-msgstr "Gebruik: %s [OPTIES...] OPDRACHT [SUBOPDRACHT]...\n"
+msgstr "Usage: %s [OPTIONES...] COMANDE [SUB-COMANDE]...\n"
 
 #: src/grd-ctl.c:461
 msgid "Commands:\n"
-msgstr "Opdrachten:\n"
+msgstr "Comandes:\n"
 
 #: src/grd-ctl.c:466
 msgid ""
@@ -76,25 +72,24 @@ msgid ""
 "                                               devices\n"
 "\n"
 msgstr ""
-"  rdp                                        - RDP-subopdrachten:\n"
-"    enable                                   - De RDP-backend inschakelen\n"
-"    disable                                  - De RDP-backend uitschakelen\n"
-"    set-tls-cert <pad-naar-cert>              - Pad naar TLS-certificaat "
-"instellen\n"
-"    set-tls-key <pad-naar-sleutel>                - Pad naar TLS-sleutel "
-"instellen\n"
-"    set-credentials <gebruikersnaam> <wachtwoord>    - Gebruikersnaam en "
-"wachtwoord instellen\n"
-"                                               credentials\n"
-"    clear-credentials                        - Gebruikersnaam en wachtwoord "
-"wissen\n"
-"                                               credentials\n"
-"    enable-view-only                         - Externe bediening van invoer "
-"uitschakelen\n"
-"                                               devices\n"
-"    disable-view-only                        - Externe bediening van invoer "
-"inschakelen\n"
-"                                               devices\n"
+"  rdp                                        - Sub-comandes de RDP:\n"
+"    enable                                   - Permisser li infrastructura "
+"RDP\n"
+"    disable                                  - Depermisser li infrastructura "
+"RDP\n"
+"    set-tls-cert <path-to-cert>              - Rute al certificate TLS\n"
+"    set-tls-key <path-to-key>                - Rute al clave TLS\n"
+"    set-credentials <username> <contrasigne>  - Assignar li nómine de "
+"usator\n"
+"                                               e li contrasigne\n"
+"    clear-credentials                        - Vacuar li nómine de usator e\n"
+"                                               li contrasigne\n"
+"    enable-view-only                         - Permisser telecomande de "
+"aparates\n"
+"                                               de intrada\n"
+"    disable-view-only                        - Depermisser telecomande de "
+"aparates\n"
+"                                               de intrada\n"
 "\n"
 
 #: src/grd-ctl.c:485
@@ -113,21 +108,6 @@ msgid ""
 "                                               devices\n"
 "\n"
 msgstr ""
-"  vnc                                        - VNC-subopdrachten:\n"
-"    enable                                   - De VNC-backend inschakelen\n"
-"    disable                                  - De VNC-backend uitschakelen\n"
-"    set-password <wachtwoord>                  - Het VNC-wachtwoord "
-"instellen\n"
-"    clear-password                           - Het VNC-wachtwoord wissen\n"
-"    set-auth-method password|prompt          - De aanmeldingsmethode "
-"instellen\n"
-"    enable-view-only                         - Externe bediening van invoer "
-"uitschakelen\n"
-"                                               devices\n"
-"    disable-view-only                        - Externe bediening van invoer "
-"inschakelen\n"
-"                                               devices\n"
-"\n"
 
 #: src/grd-ctl.c:500
 msgid ""
@@ -138,24 +118,25 @@ msgid ""
 "storage\n"
 "  --help                                     - Print this help text\n"
 msgstr ""
-"  status [--show-credentials]                - Huidige status tonen\n"
+"  status [--show-credentials]                - Monstrar li actual statu\n"
 "\n"
-"Opties:\n"
-"  --headless                                 - Gebruik ‘headless’ opslag "
-"voor gebruikersnaam en wachtwoord\n"
-"  --help                                     - Deze hulptekst tonen\n"
+"Optiones:\n"
+"  --headless                                 - Usar li magasin de "
+"legitimationes sin interfacie\n"
+"  --help                                     - Monstrar ti-ci textu\n"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:7
+#, fuzzy
 msgid "Whether the RDP backend is enabled or not"
-msgstr "Of de RDP-backend is ingeschakeld of niet"
+msgstr "Infrastructura upower activat."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:8
 msgid "If set to 'true' the RDP backend will be initialized."
-msgstr "Indien ingesteld op ‘waar’ zal de RDP-backend geïnitialiseerd worden."
+msgstr ""
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:14
 msgid "Screenshare mode of RDP connections"
-msgstr "Schermdeelmodus van RDP-verbindingen"
+msgstr ""
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:15
 msgid ""
@@ -172,24 +153,11 @@ msgid ""
 "resolution of this virtual monitor is derived from the monitor "
 "configuration, submitted by the remote desktop client."
 msgstr ""
-"De schermdeelmodus bepaalt of de RDP-backend het hoofdscherm spiegelt, of er "
-"een virtueel beeldscherm ingesteld wordt. Voor de beginresolutie van het "
-"virtueel beeldscherm gebruikt de RDP-backend de cliëntkerngegevens ([MS-"
-"RDPBCGR] 2.2.1.3.2) of de cliëntbeeldschermgegevens ([MS-RDPBCGR] "
-"2.2.1.3.6), afhankelijk van wat er beschikbaar is. Bij het gebruik van een "
-"externe bureaubladsessie met een virtueel beeldscherm kunnen cliënten de "
-"resolutie van het virtueel beeldscherm tijdens de sessies aanpassen met "
-"behulp van de Display Update Virtual Channel Extension ([MS-RDPEDISP]). "
-"Toegestane schermdeelmodi zijn: * mirror-primary (spiegel-hoofdscherm) - "
-"Neem het hoofdbeeldscherm van de huidige gebruikerssessie op. * extend "
-"(uitbreiden) - Stel een nieuw virtueel beeldscherm in en gebruik het voor de "
-"externe bureaubladsessie. De resolutie van dit virtueel beeldscherm wordt "
-"afgeleid uit de beeldschermconfiguratie die door de externe bureaubladcliënt "
-"wordt meegedeeld."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:41
+#, fuzzy
 msgid "Path to the certificate file"
-msgstr "Pad naar het certificaatbestand"
+msgstr "Li parametres de rute"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:42
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:50
@@ -197,46 +165,41 @@ msgid ""
 "In order to be able to use RDP with TLS Security, both the private key file "
 "and the certificate file need to be provided to the RDP server."
 msgstr ""
-"Om RDP met TLS-beveiliging te kunnen gebruiken, moeten zowel het "
-"privésleutelbestand als het certificaatbestand aan de RDP-server worden "
-"verstrekt."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:49
+#, fuzzy
 msgid "Path to the private key file"
-msgstr "Pad naar het privésleutelbestand"
+msgstr "Rute,File"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:57
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:74
 msgid "Only allow remote connections to view the screen content"
-msgstr "Externe verbindingen alleen toestaan om de scherminhoud te bekijken"
+msgstr ""
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:58
 msgid ""
 "When view-only is true, remote RDP connections cannot manipulate input "
 "devices (e.g. mouse and keyboard)."
 msgstr ""
-"Als alleen-lezen waar is, kunnen externe RDP-verbindingen geen "
-"invoerapparaten manipuleren (zoals muis en toetsenbord)."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:67
+#, fuzzy
 msgid "Whether the VNC backend is enabled or not"
-msgstr "Of de VNC-backend is ingeschakeld of niet"
+msgstr "Infrastructura upower activat."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:68
 msgid "If set to 'true' the VNC backend will be initialized."
-msgstr "Indien ingesteld op ‘waar’ zal de VNC-backend geïnitialiseerd worden."
+msgstr ""
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:75
 msgid ""
 "When view-only is true, remote VNC connections cannot manipulate input "
 "devices (e.g. mouse and keyboard)."
 msgstr ""
-"Als alleen-lezen waar is, kunnen externe VNC-verbindingen geen "
-"invoerapparaten manipuleren (zoals muis en toetsenbord)."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:82
 msgid "Method used to authenticate VNC connections"
-msgstr "Methode die wordt gebruikt om VNC-verbindingen te verifiëren"
+msgstr ""
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:83
 msgid ""
@@ -246,17 +209,10 @@ msgid ""
 "access to the workstation to explicitly approve the new connection. * "
 "password - by requiring the remote client to provide a known password"
 msgstr ""
-"De VNC-authenticatiemethode beschrijft hoe een externe verbinding wordt "
-"geverifieerd. Dit kan momenteel op twee verschillende manieren worden "
-"gedaan: * prompt (vragen) - door de gebruiker om elke nieuwe verbinding te "
-"vragen, waarbij een persoon met fysieke toegang tot het werkstation wordt "
-"gevraagd om de nieuwe verbinding uitdrukkelijk goed te keuren. * password "
-"(wachtwoord) - door de externe cliënt te vragen een bekend wachtwoord op te "
-"geven"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:95
 msgid "Screenshare mode of VNC connections"
-msgstr "Schermdeelmodus van VNC-verbindingen"
+msgstr ""
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:96
 msgid ""
@@ -272,15 +228,3 @@ msgid ""
 "Clients can override the initial resolution with subsequent monitor "
 "configuration updates."
 msgstr ""
-"De schermdeelmodus bepaalt of de VNC-backend het hoofdscherm spiegelt, of er "
-"een virtueel beeldscherm ingesteld wordt. Voor de beginresolutie van het "
-"virtueel beeldscherm gebruikt de VNC-backend een standaardgrootte van "
-"1920x1080 pixels. Bij het gebruik van een externe bureaubladsessie met een "
-"virtueel beeldscherm kunnen cliënten de resolutie van het virtueel "
-"beeldscherm tijdens de sessies aanpassen met behulp van de setDesktopSize-"
-"PDU. Toegestane schermdeelmodi zijn: * mirror-primary (spiegel-hoofdscherm) "
-"- Neem het hoofdbeeldscherm van de huidige gebruikerssessie op. * extend "
-"(uitbreiden) - Stel een nieuw virtueel beeldscherm in en gebruik het voor de "
-"externe bureaubladsessie. De beginresolutie van dit virtueel beeldscherm "
-"wordt ingesteld op 1920x1080 pixels. Cliënten kunnen de beginresolutie "
-"overschrijven door middel van beeldschermconfiguratieupdates."
