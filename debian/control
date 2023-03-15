@@ -10,7 +10,7 @@ Uploaders: Jeremy Bicha <jbicha@ubuntu.com>
 Build-Depends: debhelper-compat (= 13),
                asciidoc-base,
                dh-sequence-gnome,
-               freerdp2-dev (>= 2.8.0),
+               freerdp2-dev (>= 2.10.0),
                docbook-xml,
                libcairo2-dev,
                libdrm-dev,
