@@ -31,6 +31,7 @@
 #include "grd-clipboard-rdp.h"
 #include "grd-context.h"
 #include "grd-damage-utils.h"
+#include "grd-debug.h"
 #include "grd-hwaccel-nvidia.h"
 #include "grd-rdp-audio-playback.h"
 #include "grd-rdp-buffer.h"
@@ -288,8 +289,8 @@ take_or_encode_frame (GrdSessionRdp *session_rdp,
                       GrdRdpBuffer  *buffer)
 {
   SessionMetrics *session_metrics = &session_rdp->session_metrics;
-  uint16_t width = buffer->width;
-  uint16_t height = buffer->height;
+  uint16_t width = grd_rdp_buffer_get_width (buffer);
+  uint16_t height = grd_rdp_buffer_get_height (buffer);
 
   if (!session_metrics->received_first_frame)
     {
@@ -670,6 +671,9 @@ grd_session_rdp_notify_error (GrdSessionRdp      *session_rdp,
     case GRD_SESSION_RDP_ERROR_BAD_CAPS:
       session_rdp->rdp_error_info = ERRINFO_BAD_CAPABILITIES;
       break;
+    case GRD_SESSION_RDP_ERROR_BAD_MONITOR_DATA:
+      session_rdp->rdp_error_info = ERRINFO_BAD_MONITOR_DATA;
+      break;
     case GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED:
       session_rdp->rdp_error_info = ERRINFO_GRAPHICS_SUBSYSTEM_FAILED;
       break;
@@ -778,7 +782,7 @@ rdp_peer_refresh_rfx (GrdSessionRdp  *session_rdp,
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
   rdpSettings *rdp_settings = peer->settings;
   rdpUpdate *rdp_update = peer->update;
-  uint8_t *data = buffer->local_data;
+  uint8_t *data = grd_rdp_buffer_get_local_data (buffer);
   uint32_t src_stride = grd_session_rdp_get_stride_for_width (session_rdp,
                                                               rdp_surface->width);
   SURFACE_BITS_COMMAND cmd = {0};
@@ -928,7 +932,7 @@ rdp_peer_refresh_nsc (GrdSessionRdp  *session_rdp,
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
   rdpSettings *rdp_settings = peer->settings;
   rdpUpdate *rdp_update = peer->update;
-  uint8_t *data = buffer->local_data;
+  uint8_t *data = grd_rdp_buffer_get_local_data (buffer);
   uint32_t src_stride = grd_session_rdp_get_stride_for_width (session_rdp,
                                                               rdp_surface->width);
   NSCThreadPoolContext *thread_pool_context =
@@ -1173,7 +1177,7 @@ rdp_peer_refresh_raw (GrdSessionRdp  *session_rdp,
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
   rdpSettings *rdp_settings = peer->settings;
   rdpUpdate *rdp_update = peer->update;
-  uint8_t *data = buffer->local_data;
+  uint8_t *data = grd_rdp_buffer_get_local_data (buffer);
   uint32_t src_stride = grd_session_rdp_get_stride_for_width (session_rdp,
                                                               rdp_surface->width);
   RawThreadPoolContext *thread_pool_context =
@@ -1719,6 +1723,15 @@ rdp_peer_capabilities (freerdp_peer *peer)
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
   GrdSessionRdp *session_rdp = rdp_peer_context->session_rdp;
   rdpSettings *rdp_settings = peer->settings;
+  g_autoptr (GError) error = NULL;
+
+  if (!rdp_settings->SupportGraphicsPipeline &&
+      !(grd_get_debug_flags () & GRD_DEBUG_RDP_LEGACY_GRAPHICS))
+    {
+      g_warning ("[RDP] Client did not advertise support for the Graphics "
+                 "Pipeline, closing connection");
+      return FALSE;
+    }
 
   if (session_rdp->screen_share_mode == GRD_RDP_SCREEN_SHARE_MODE_EXTEND &&
       !rdp_settings->SupportGraphicsPipeline)
@@ -1732,7 +1745,7 @@ rdp_peer_capabilities (freerdp_peer *peer)
     {
       session_rdp->monitor_config =
         grd_rdp_monitor_config_new_from_client_data (rdp_settings,
-                                                     MAX_MONITOR_COUNT);
+                                                     MAX_MONITOR_COUNT, &error);
     }
   else
     {
@@ -1747,6 +1760,12 @@ rdp_peer_capabilities (freerdp_peer *peer)
 
       session_rdp->monitor_config->connectors = connectors;
       session_rdp->monitor_config->monitor_count = 1;
+    }
+  if (!session_rdp->monitor_config)
+    {
+      g_warning ("[RDP] Received invalid monitor layout from client: %s, "
+                 "closing connection", error->message);
+      return FALSE;
     }
 
   if ((rdp_settings->SupportGraphicsPipeline || rdp_settings->RemoteFxCodec ||
@@ -1849,6 +1868,14 @@ rdp_peer_post_connect (freerdp_peer *peer)
     {
       g_warning ("[RDP] Client does not support graphics pipeline. Disabling "
                  "audio output redirection");
+      rdp_settings->AudioPlayback = FALSE;
+    }
+  if (rdp_settings->AudioPlayback &&
+      (rdp_settings->OsMajorType == OSMAJORTYPE_IOS ||
+       rdp_settings->OsMajorType == OSMAJORTYPE_ANDROID))
+    {
+      g_warning ("[RDP] Client cannot handle graphics and audio "
+                 "simultaneously. Disabling audio output redirection");
       rdp_settings->AudioPlayback = FALSE;
     }
 
@@ -2067,6 +2094,7 @@ init_rdp_session (GrdSessionRdp  *session_rdp,
   rdp_settings->RefreshRect = TRUE;
   rdp_settings->RemoteConsoleAudio = TRUE;
   rdp_settings->RemoteFxCodec = TRUE;
+  rdp_settings->RemoteFxImageCodec = TRUE;
   rdp_settings->SupportGraphicsPipeline = TRUE;
   rdp_settings->NSCodec = TRUE;
   rdp_settings->FrameMarkerCommandEnabled = TRUE;

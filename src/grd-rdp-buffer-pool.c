@@ -119,7 +119,7 @@ grd_rdp_buffer_pool_resize_buffers (GrdRdpBufferPool *buffer_pool,
 static gboolean
 buffer_has_mapped_data (GrdRdpBuffer *buffer)
 {
-  if (buffer->mapped_cuda_pointer)
+  if (grd_rdp_buffer_get_mapped_cuda_pointer (buffer))
     return TRUE;
 
   return FALSE;
@@ -250,7 +250,7 @@ unmap_untaken_buffers (gpointer user_data)
                                         (gpointer *) &buffer_info))
     {
       if (!buffer_info->buffer_taken)
-        grd_rdp_buffer_unmap_resources (buffer);
+        grd_rdp_buffer_queue_resource_unmap (buffer);
     }
   g_mutex_unlock (&buffer_pool->pool_mutex);
 

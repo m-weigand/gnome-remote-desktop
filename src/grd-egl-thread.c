@@ -33,6 +33,7 @@ struct _GrdEglThread
   GCond cond;
 
   GAsyncQueue *task_queue;
+  GHashTable *slot_table;
 
   GHashTable *modifiers;
 
@@ -56,11 +57,18 @@ typedef struct _GrdEglTask
   GFunc func;
   GDestroyNotify destroy;
 
-  GMainContext *callback_context;
   GrdEglThreadCallback callback;
   gpointer callback_user_data;
   GDestroyNotify callback_destroy;
 } GrdEglTask;
+
+typedef struct
+{
+  GrdEglTask base;
+
+  GMutex task_mutex;
+  GrdEglTask *task;
+} GrdReplaceableTask;
 
 typedef struct _GrdEglTaskCustom
 {
@@ -140,8 +148,83 @@ typedef struct _GrdEglTaskDownload
   uint64_t *modifiers;
 } GrdEglTaskDownload;
 
-typedef void (* GrdEglFrameReady) (uint8_t  *data,
-                                   gpointer  user_data);
+static void
+grd_egl_task_free (GrdEglTask *task)
+{
+  if (task->callback_destroy)
+    g_clear_pointer (&task->callback_user_data, task->callback_destroy);
+  g_free (task);
+}
+
+static void
+run_replaceable_task_in_impl (gpointer data,
+                              gpointer user_data)
+{
+  GrdEglThread *egl_thread = data;
+  GrdReplaceableTask *replaceable_task = user_data;
+  g_autoptr (GMutexLocker) locker = NULL;
+  GrdEglTask *task;
+
+  locker = g_mutex_locker_new (&replaceable_task->task_mutex);
+  task = g_steal_pointer (&replaceable_task->task);
+  if (!task)
+    return;
+
+  g_clear_pointer (&locker, g_mutex_locker_free);
+
+  task->func (egl_thread, task);
+  task->destroy (task);
+}
+
+static void
+replaceable_task_dummy_free (GrdEglTask *task_base)
+{
+}
+
+static GrdReplaceableTask *
+replaceable_task_new (void)
+{
+  GrdReplaceableTask *replaceable_task;
+
+  replaceable_task = g_new0 (GrdReplaceableTask, 1);
+  replaceable_task->base.func = run_replaceable_task_in_impl;
+  replaceable_task->base.destroy = (GDestroyNotify) replaceable_task_dummy_free;
+
+  g_mutex_init (&replaceable_task->task_mutex);
+
+  return replaceable_task;
+}
+
+static void
+replaceable_task_replace_task (GrdReplaceableTask *replaceable_task,
+                               GrdEglTask         *new_task)
+{
+  GrdEglTask *task;
+
+  g_mutex_lock (&replaceable_task->task_mutex);
+  task = g_steal_pointer (&replaceable_task->task);
+
+  if (task)
+    {
+      if (task->callback)
+        task->callback (FALSE, task->callback_user_data);
+
+      task->destroy (task);
+    }
+
+  replaceable_task->task = new_task;
+  g_mutex_unlock (&replaceable_task->task_mutex);
+}
+
+static void
+replaceable_task_free (GrdReplaceableTask *replaceable_task)
+{
+  replaceable_task_replace_task (replaceable_task, NULL);
+
+  g_mutex_clear (&replaceable_task->task_mutex);
+
+  grd_egl_task_free (&replaceable_task->base);
+}
 
 static gboolean
 is_hardware_accelerated (void)
@@ -321,6 +404,8 @@ initialize_egl_context (GrdEglThread  *egl_thread,
 
   if (!query_format_modifiers (egl_thread, egl_display, error))
     {
+      eglMakeCurrent (egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                      EGL_NO_CONTEXT);
       eglDestroyContext (egl_display, egl_context);
       eglTerminate (egl_display);
       return FALSE;
@@ -328,6 +413,8 @@ initialize_egl_context (GrdEglThread  *egl_thread,
 
   if (g_hash_table_size (egl_thread->modifiers) == 0)
     {
+      eglMakeCurrent (egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                      EGL_NO_CONTEXT);
       eglDestroyContext (egl_display, egl_context);
       eglTerminate (egl_display);
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
@@ -337,6 +424,8 @@ initialize_egl_context (GrdEglThread  *egl_thread,
 
   if (!is_hardware_accelerated ())
     {
+      eglMakeCurrent (egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                      EGL_NO_CONTEXT);
       eglDestroyContext (egl_display, egl_context);
       eglTerminate (egl_display);
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
@@ -384,14 +473,6 @@ grd_egl_init_in_impl (GrdEglThread  *egl_thread,
     }
 
   return initialized;
-}
-
-static void
-grd_egl_task_free (GrdEglTask *task)
-{
-  if (task->callback_destroy)
-    g_clear_pointer (&task->callback_user_data, task->callback_destroy);
-  g_free (task);
 }
 
 static void
@@ -552,10 +633,12 @@ grd_egl_thread_func (gpointer user_data)
 GrdEglThread *
 grd_egl_thread_new (GError **error)
 {
-  GrdEglThread *egl_thread;
+  g_autoptr (GrdEglThread) egl_thread = NULL;
 
   egl_thread = g_new0 (GrdEglThread, 1);
-
+  egl_thread->slot_table =
+    g_hash_table_new_full (NULL, NULL,
+                           NULL, (GDestroyNotify) replaceable_task_free);
   egl_thread->modifiers =
     g_hash_table_new_full (NULL, NULL,
                            NULL, (GDestroyNotify) g_array_unref);
@@ -576,11 +659,10 @@ grd_egl_thread_new (GError **error)
   if (egl_thread->impl.error)
     {
       g_propagate_error (error, egl_thread->impl.error);
-      grd_egl_thread_free (egl_thread);
       return NULL;
     }
 
-  return egl_thread;
+  return g_steal_pointer (&egl_thread);
 }
 
 static gboolean
@@ -611,7 +693,33 @@ grd_egl_thread_free (GrdEglThread *egl_thread)
   g_clear_pointer (&egl_thread->modifiers, g_hash_table_unref);
   g_clear_pointer (&egl_thread->impl.main_context, g_main_context_unref);
 
+  g_assert (g_hash_table_size (egl_thread->slot_table) == 0);
+  g_clear_pointer (&egl_thread->slot_table, g_hash_table_unref);
+
   g_free (egl_thread);
+}
+
+void *
+grd_egl_thread_acquire_slot (GrdEglThread *egl_thread)
+{
+  GrdReplaceableTask *replaceable_task;
+
+  replaceable_task = replaceable_task_new ();
+
+  g_async_queue_lock (egl_thread->task_queue);
+  g_hash_table_add (egl_thread->slot_table, replaceable_task);
+  g_async_queue_unlock (egl_thread->task_queue);
+
+  return replaceable_task;
+}
+
+void
+grd_egl_thread_release_slot (GrdEglThread     *egl_thread,
+                             GrdEglThreadSlot  slot)
+{
+  g_async_queue_lock (egl_thread->task_queue);
+  g_hash_table_remove (egl_thread->slot_table, slot);
+  g_async_queue_unlock (egl_thread->task_queue);
 }
 
 static EGLImageKHR
@@ -965,8 +1073,28 @@ run_custom_task_in_impl (gpointer data,
     task->base.callback (success, task->base.callback_user_data);
 }
 
+static void
+push_replaceable_task (GrdEglThread     *egl_thread,
+                       GrdEglThreadSlot  slot,
+                       GrdEglTask       *task)
+{
+  GrdReplaceableTask *replaceable_task = NULL;
+
+  g_async_queue_lock (egl_thread->task_queue);
+  if (!g_hash_table_lookup_extended (egl_thread->slot_table, slot,
+                                     NULL, (gpointer *) &replaceable_task))
+    g_assert_not_reached ();
+
+  g_assert (replaceable_task);
+
+  replaceable_task_replace_task (replaceable_task, task);
+  g_async_queue_push_unlocked (egl_thread->task_queue, replaceable_task);
+  g_async_queue_unlock (egl_thread->task_queue);
+}
+
 void
 grd_egl_thread_download (GrdEglThread                  *egl_thread,
+                         GrdEglThreadSlot               slot,
                          uint32_t                       pbo,
                          uint32_t                       pbo_height,
                          uint32_t                       pbo_stride,
@@ -1017,7 +1145,11 @@ grd_egl_thread_download (GrdEglThread                  *egl_thread,
   task->base.callback_user_data = user_data;
   task->base.callback_destroy = destroy;
 
-  g_async_queue_push (egl_thread->task_queue, task);
+  if (slot)
+    push_replaceable_task (egl_thread, slot, &task->base);
+  else
+    g_async_queue_push (egl_thread->task_queue, task);
+
   g_main_context_wakeup (egl_thread->impl.main_context);
 }
 
@@ -1080,6 +1212,7 @@ grd_egl_thread_deallocate (GrdEglThread                  *egl_thread,
 
 void
 grd_egl_thread_upload (GrdEglThread                *egl_thread,
+                       GrdEglThreadSlot             slot,
                        uint32_t                     pbo,
                        uint32_t                     height,
                        uint32_t                     stride,
@@ -1118,7 +1251,11 @@ grd_egl_thread_upload (GrdEglThread                *egl_thread,
   task->base.callback_user_data = user_data;
   task->base.callback_destroy = destroy;
 
-  g_async_queue_push (egl_thread->task_queue, task);
+  if (slot)
+    push_replaceable_task (egl_thread, slot, &task->base);
+  else
+    g_async_queue_push (egl_thread->task_queue, task);
+
   g_main_context_wakeup (egl_thread->impl.main_context);
 }
 
