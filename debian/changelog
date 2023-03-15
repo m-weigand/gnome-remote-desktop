@@ -1,8 +1,10 @@
-gnome-remote-desktop (44~rc-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (44~rc-1) experimental; urgency=medium
 
   * New upstream release
+  * Depend on libmutter-12 instead of libmutter-11
+  * debian/control.in: Bump minimum freerdp to 2.10.10
 
- -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 15 Mar 2023 09:25:59 -0400
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 15 Mar 2023 09:30:27 -0400
 
 gnome-remote-desktop (43.3-1) unstable; urgency=medium
 
