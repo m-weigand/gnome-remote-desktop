@@ -1,12 +1,12 @@
 project('gnome-remote-desktop', 'c',
-        version: '43.3',
+        version: '44.rc',
         meson_version: '>= 0.57.0',
         default_options: ['warning_level=1',
                           'buildtype=debugoptimized'])
 
 cuda_req = '>= 11.1.5.0'
 epoxy_req = '>= 1.4'
-freerdp_req = '>= 2.8.0'
+freerdp_req = '>= 2.10.0'
 fuse_req = '>= 3.9.1'
 xkbcommon_req = '>= 1.0.0'
 
