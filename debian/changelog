@@ -1,6 +1,11 @@
 gnome-remote-desktop (44.1-1) UNRELEASED; urgency=medium
 
   * New upstream release
+  * debian/upstream/metadata: Fix malformed file, causing gbp clone with
+    --add-upstream-vcs to crash with a traceback with the following error
+    at the end:
+      yaml.scanner.ScannerError: mapping values are not allowed here
+      in "debian/upstream/metadata", line 2, column 13
 
  -- Amin Bandali <bandali@ubuntu.com>  Thu, 27 Apr 2023 11:38:46 -0400
 
