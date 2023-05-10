@@ -1,4 +1,4 @@
-gnome-remote-desktop (44.1-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (44.1-1) experimental; urgency=medium
 
   * New upstream release
   * debian/upstream/metadata: Fix malformed file, causing gbp clone with
