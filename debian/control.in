@@ -24,7 +24,13 @@ Build-Depends: debhelper-compat (= 13),
                libwinpr2-dev (>= 2.3.0),
                libxkbcommon-dev (>= 1.0.0),
                meson (>= 0.47.0),
+               mutter <!nocheck>,
+               openssl <!nocheck>,
+               pipewire <!nocheck>,
+               python3-dbus <!nocheck>,
+               python3-gi <!nocheck>,
                systemd,
+               wireplumber <!nocheck>,
 Standards-Version: 4.6.2
 Rules-Requires-Root: no
 Vcs-Browser: https://salsa.debian.org/gnome-team/gnome-remote-desktop
