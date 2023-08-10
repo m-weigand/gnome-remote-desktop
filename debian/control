@@ -6,7 +6,7 @@ Source: gnome-remote-desktop
 Section: gnome
 Priority: optional
 Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
-Uploaders: Jeremy Bicha <jbicha@ubuntu.com>, Marco Trevisan (Treviño) <marco@ubuntu.com>
+Uploaders: Amin Bandali <bandali@ubuntu.com>, Laurent Bigonville <bigon@debian.org>, Marco Trevisan (Treviño) <marco@ubuntu.com>
 Build-Depends: debhelper-compat (= 13),
                asciidoc-base,
                dh-sequence-gnome,
@@ -49,7 +49,7 @@ Depends: ${misc:Depends},
          fuse3,
          libmutter-12-0 (>= 44~),
          pipewire (>= 0.3.0),
-         pipewire-media-session | wireplumber,
+         wireplumber,
 Breaks: gnome-control-center (<< 1:42)
 Description: Remote desktop daemon for GNOME using PipeWire
  This daemon enables GNOME to offer remote desktop sharing and control
