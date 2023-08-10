@@ -1,8 +1,10 @@
-gnome-remote-desktop (44.2-4) UNRELEASED; urgency=medium
+gnome-remote-desktop (44.2-4) experimental; urgency=medium
 
+  * Team upload
   * Merge packaging from unstable
+  * Override a Lintian false-positive (see #1031037)
 
- -- Simon McVittie <smcv@debian.org>  Thu, 10 Aug 2023 12:59:20 +0100
+ -- Simon McVittie <smcv@debian.org>  Thu, 10 Aug 2023 13:03:43 +0100
 
 gnome-remote-desktop (43.4-2) unstable; urgency=medium
 
