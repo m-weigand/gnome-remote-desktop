@@ -1,5 +1,6 @@
-gnome-remote-desktop (43.4-2) UNRELEASED; urgency=medium
+gnome-remote-desktop (43.4-2) unstable; urgency=medium
 
+  * Team upload
   * d/control.in: Drop pipewire-media-session alternative dependency.
     pipewire-media-session is not going to be included in trixie
     (see #1030765), so wireplumber is the only option. The release team's
@@ -8,7 +9,7 @@ gnome-remote-desktop (43.4-2) UNRELEASED; urgency=medium
     autoremoval.
   * d/control.in, d/gbp.conf: Use debian/trixie packaging branch
 
- -- Simon McVittie <smcv@debian.org>  Thu, 10 Aug 2023 10:48:14 +0100
+ -- Simon McVittie <smcv@debian.org>  Thu, 10 Aug 2023 10:49:07 +0100
 
 gnome-remote-desktop (43.4-1) unstable; urgency=medium
 
