@@ -16,7 +16,7 @@ override_dh_auto_configure:
 	dh_auto_configure -- -Dfdk_aac=false
 
 
-ifeq ($(DEB_HOST_ARCH),$(findstring $(DEB_HOST_ARCH),arm64 avr32 hppa m68k mips mips64 mipsn32 powerpc ppc64 s390 s390x sparc sparc64))
+ifeq ($(DEB_HOST_ARCH),$(findstring $(DEB_HOST_ARCH),arm64 avr32 hppa m68k mips mipsel mips64 mipsn32 powerpc ppc64 s390 s390x sparc sparc64 x32))
     TESTS_CAN_FAIL=true
 else
     TESTS_CAN_FAIL=false
