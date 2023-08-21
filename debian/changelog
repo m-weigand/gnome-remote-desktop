@@ -1,8 +1,9 @@
-gnome-remote-desktop (45~beta-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (45~beta-1) experimental; urgency=medium
 
   * New upstream release
+  * debian/control.in: Switch libmutter dependency to 13 (GNOME 45)
 
- -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 21 Aug 2023 15:25:03 -0400
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 21 Aug 2023 15:28:36 -0400
 
 gnome-remote-desktop (44.2-6) unstable; urgency=medium
 
