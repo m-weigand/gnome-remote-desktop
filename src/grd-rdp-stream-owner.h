@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 Red Hat Inc.
+ * Copyright (C) 2023 Pascal Nowack
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -15,35 +15,31 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
  * 02111-1307, USA.
- *
  */
 
-#ifndef GRD_STREAM_H
-#define GRD_STREAM_H
+#ifndef GRD_RDP_STREAM_OWNER_H
+#define GRD_RDP_STREAM_OWNER_H
 
 #include <glib-object.h>
 #include <stdint.h>
 
-#include "grd-dbus-mutter-screen-cast.h"
 #include "grd-types.h"
 
-#define GRD_TYPE_STREAM (grd_stream_get_type ())
-G_DECLARE_DERIVABLE_TYPE (GrdStream, grd_stream, GRD, STREAM, GObject)
+#define GRD_TYPE_RDP_STREAM_OWNER (grd_rdp_stream_owner_get_type ())
+G_DECLARE_DERIVABLE_TYPE (GrdRdpStreamOwner, grd_rdp_stream_owner,
+                          GRD, RDP_STREAM_OWNER, GObject)
 
-struct _GrdStreamClass
+struct _GrdRdpStreamOwnerClass
 {
   GObjectClass parent_class;
+
+  void (* on_stream_created) (GrdRdpStreamOwner *stream_owner,
+                              uint32_t           stream_id,
+                              GrdStream         *stream);
 };
 
-GrdStream *grd_stream_new (uint32_t                       stream_id,
-                           GrdDBusMutterScreenCastStream *proxy);
+void grd_rdp_stream_owner_notify_stream_created (GrdRdpStreamOwner *stream_owner,
+                                                 uint32_t           stream_id,
+                                                 GrdStream         *stream);
 
-uint32_t grd_stream_get_stream_id (GrdStream *stream);
-
-uint32_t grd_stream_get_pipewire_node_id (GrdStream *stream);
-
-const char * grd_stream_get_object_path (GrdStream *stream);
-
-void grd_stream_disconnect_proxy_signals (GrdStream *stream);
-
-#endif /* GRD_STREAM_H */
+#endif /* GRD_RDP_STREAM_OWNER_H */

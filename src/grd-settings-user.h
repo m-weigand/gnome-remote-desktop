@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Red Hat Inc.
+ * Copyright (C) 2018 Red Hat Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -16,17 +16,17 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
  * 02111-1307, USA.
  *
- * Written by:
- *     Jonas Ådahl <jadahl@gmail.com>
  */
 
-#ifndef GRD_PRIVATE_H
-#define GRD_PRIVATE_H
+#ifndef GRD_SETTINGS_USER_H
+#define GRD_SETTINGS_USER_H
 
-#define GRD_DAEMON_USER_APPLICATION_ID "org.gnome.RemoteDesktop.User"
-#define MUTTER_REMOTE_DESKTOP_BUS_NAME "org.gnome.Mutter.RemoteDesktop"
-#define MUTTER_REMOTE_DESKTOP_OBJECT_PATH "/org/gnome/Mutter/RemoteDesktop"
-#define MUTTER_SCREEN_CAST_BUS_NAME "org.gnome.Mutter.ScreenCast"
-#define MUTTER_SCREEN_CAST_OBJECT_PATH "/org/gnome/Mutter/ScreenCast"
+#include "grd-settings.h"
 
-#endif /* GRD_PRIVATE_H */
+#define GRD_TYPE_SETTINGS_USER (grd_settings_user_get_type ())
+G_DECLARE_FINAL_TYPE (GrdSettingsUser, grd_settings_user,
+                      GRD, SETTINGS_USER, GrdSettings)
+
+GrdSettingsUser *grd_settings_user_new (GrdContext *context);
+
+#endif /* GRD_SETTINGS_USER_H */

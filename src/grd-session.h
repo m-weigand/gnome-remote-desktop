@@ -72,9 +72,11 @@ struct _GrdSessionClass
 
   void (*remote_desktop_session_ready) (GrdSession *session);
   void (*remote_desktop_session_started) (GrdSession *session);
-  void (*stream_ready) (GrdSession *session,
-                        GrdStream  *stream);
   void (*stop) (GrdSession *session);
+
+  void (*on_stream_created) (GrdSession *session,
+                             uint32_t    stream_id,
+                             GrdStream  *stream);
 
   void (*on_caps_lock_state_changed) (GrdSession *session,
                                       gboolean    state);
@@ -85,10 +87,12 @@ struct _GrdSessionClass
 GrdContext *grd_session_get_context (GrdSession *session);
 
 void grd_session_record_monitor (GrdSession              *session,
+                                 uint32_t                 stream_id,
                                  const char              *connector,
                                  GrdScreenCastCursorMode  cursor_mode);
 
 void grd_session_record_virtual (GrdSession              *session,
+                                 uint32_t                 stream_id,
                                  GrdScreenCastCursorMode  cursor_mode,
                                  gboolean                 is_platform);
 
@@ -114,7 +118,7 @@ void grd_session_notify_pointer_axis_discrete (GrdSession     *session,
                                                int             steps);
 
 void grd_session_notify_pointer_motion_absolute (GrdSession *session,
-                                                 GrdStream  *stream,
+                                                 const char *stream_path,
                                                  double      x,
                                                  double      y);
 

@@ -30,8 +30,8 @@ def run_vnc_test_client():
   vnc_test_client = subprocess.Popen([vnc_test_client_path, 'localhost:5912'],
                                      stderr=subprocess.STDOUT)
   vnc_test_client.wait()
-  if vnc_test_client.wait() != 0:
-    print("VNC test client exited incorrectly")
+  if vnc_test_client.returncode != 0:
+    print("VNC test client exited incorrectly: %d"%(vnc_test_client.returncode))
     vnc_client_failed = True
   else:
     vnc_client_failed = False
@@ -69,7 +69,8 @@ def remote_desktop_name_appeared_cb(name):
 def start_mutter():
   global mutter
   print("Starting mutter")
-  mutter = subprocess.Popen(['mutter', '--headless', '--wayland', '--no-x11',
+  mutter_path = os.getenv('MUTTER_BIN', 'mutter')
+  mutter = subprocess.Popen([mutter_path, '--headless', '--wayland', '--no-x11',
                              '--virtual-monitor', '1024x768'],
                             stderr=subprocess.STDOUT)
 

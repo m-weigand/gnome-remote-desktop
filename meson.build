@@ -1,5 +1,5 @@
 project('gnome-remote-desktop', 'c',
-        version: '44.2',
+        version: '45.beta',
         meson_version: '>= 0.57.0',
         default_options: ['warning_level=1',
                           'buildtype=debugoptimized'])
@@ -12,6 +12,7 @@ xkbcommon_req = '>= 1.0.0'
 
 gnome = import('gnome')
 i18n  = import('i18n')
+fs  = import('fs')
 
 cc = meson.get_compiler('c')
 
@@ -105,11 +106,14 @@ builddir = meson.current_build_dir()
 
 subdir('data')
 subdir('src')
-subdir('tests')
 subdir('po')
 
 if get_option('man')
   subdir('man')
+endif
+
+if get_option('tests')
+  subdir('tests')
 endif
 
 gnome.post_install(

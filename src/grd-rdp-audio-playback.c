@@ -36,7 +36,7 @@
 
 #define N_CHANNELS 2
 #define N_SAMPLES_PER_SEC 44100
-#define N_BYTES_PER_SAMPLE_PCM sizeof (uint16_t)
+#define N_BYTES_PER_SAMPLE_PCM sizeof (int16_t)
 #define N_BLOCK_ALIGN_PCM (N_CHANNELS * N_BYTES_PER_SAMPLE_PCM)
 
 #define TRAINING_PACKSIZE 1024
@@ -44,7 +44,7 @@
 
 typedef struct _AudioData
 {
-  uint16_t *data;
+  int16_t *data;
   uint32_t size;
   int64_t timestamp_us;
 } AudioData;
@@ -730,7 +730,8 @@ grd_rdp_audio_playback_dispose (GObject *object)
       audio_playback->subscribed_status = FALSE;
     }
 
-  audio_playback->rdpsnd_context->server_formats = NULL;
+  if (audio_playback->rdpsnd_context)
+    audio_playback->rdpsnd_context->server_formats = NULL;
 
   g_mutex_lock (&audio_playback->streams_mutex);
   g_hash_table_remove_all (audio_playback->audio_streams);

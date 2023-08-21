@@ -23,8 +23,6 @@
 
 #include <cairo/cairo.h>
 
-#define CLAMP_DESKTOP_SIZE(value) MAX (MIN (value, 8192), 200)
-
 static uint32_t
 sanitize_value (uint32_t value,
                 uint32_t lower_bound,
@@ -83,8 +81,8 @@ write_sanitized_monitor_data (GrdRdpVirtualMonitor  *monitor,
 
   monitor->pos_x = pos_x;
   monitor->pos_y = pos_y;
-  monitor->width = CLAMP_DESKTOP_SIZE (width);
-  monitor->height = CLAMP_DESKTOP_SIZE (height);
+  monitor->width = width;
+  monitor->height = height;
   monitor->is_primary = is_primary;
 
   monitor->physical_width = sanitize_value (physical_width, 10, 10000);
@@ -107,14 +105,17 @@ create_monitor_config_from_client_core_data (rdpSettings  *rdp_settings,
                                              GError      **error)
 {
   g_autoptr (GrdRdpMonitorConfig) monitor_config = NULL;
+  GrdRdpVirtualMonitor *virtual_monitor;
 
   monitor_config = g_malloc0 (sizeof (GrdRdpMonitorConfig));
   monitor_config->is_virtual = TRUE;
   monitor_config->monitor_count = 1;
   monitor_config->virtual_monitors = g_new0 (GrdRdpVirtualMonitor, 1);
 
+  virtual_monitor = &monitor_config->virtual_monitors[0];
+
   /* Ignore the DeviceScaleFactor. It is deprecated (Win 8.1 only) */
-  if (!write_sanitized_monitor_data (&monitor_config->virtual_monitors[0],
+  if (!write_sanitized_monitor_data (virtual_monitor,
                                      0, 0,
                                      rdp_settings->DesktopWidth,
                                      rdp_settings->DesktopHeight,
@@ -126,14 +127,15 @@ create_monitor_config_from_client_core_data (rdpSettings  *rdp_settings,
                                      error))
     return NULL;
 
-  monitor_config->gpo_width = monitor_config->virtual_monitors[0].width;
-  monitor_config->gpo_height = monitor_config->virtual_monitors[0].height;
+  monitor_config->desktop_width = virtual_monitor->width;
+  monitor_config->desktop_height = virtual_monitor->height;
 
   return g_steal_pointer (&monitor_config);
 }
 
-static void
-determine_primary_monitor (GrdRdpMonitorConfig *monitor_config)
+static gboolean
+determine_primary_monitor (GrdRdpMonitorConfig  *monitor_config,
+                           GError              **error)
 {
   uint32_t i;
 
@@ -143,11 +145,14 @@ determine_primary_monitor (GrdRdpMonitorConfig *monitor_config)
           monitor_config->virtual_monitors[i].pos_y == 0)
         {
           monitor_config->virtual_monitors[i].is_primary = TRUE;
-          return;
+          return TRUE;
         }
     }
 
-  monitor_config->virtual_monitors[0].is_primary = TRUE;
+  g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+               "No suitable primary monitor in monitor layout");
+
+  return FALSE;
 }
 
 static gboolean
@@ -177,10 +182,18 @@ verify_monitor_config (GrdRdpMonitorConfig  *monitor_config,
       cairo_region_union_rectangle (region, &rect);
     }
 
-  /* Calculate size of Graphics Output Buffer ADM element */
+  /* Calculate the size of the desktop and Graphics Output Buffer ADM element */
   cairo_region_get_extents (region, &rect);
-  monitor_config->gpo_width = rect.width - rect.x;
-  monitor_config->gpo_height = rect.height - rect.y;
+  monitor_config->desktop_width = rect.width;
+  monitor_config->desktop_height = rect.height;
+
+  /* We already checked, that the primary monitor is at (0, 0) */
+  g_assert (rect.x <= 0);
+  g_assert (rect.y <= 0);
+
+  /* Determine monitor offset in input- and output-region */
+  monitor_config->layout_offset_x = rect.x;
+  monitor_config->layout_offset_y = rect.y;
   cairo_region_destroy (region);
 
   return TRUE;
@@ -217,7 +230,7 @@ create_monitor_config_from_client_monitor_data (rdpSettings  *rdp_settings,
       uint32_t orientation = 0;
       uint32_t scale = 0;
 
-      if (found_primary_monitor)
+      if (found_primary_monitor || monitor->x != 0 || monitor->y != 0)
         is_primary = FALSE;
       if (!found_primary_monitor && is_primary)
         found_primary_monitor = TRUE;
@@ -244,8 +257,10 @@ create_monitor_config_from_client_monitor_data (rdpSettings  *rdp_settings,
                                          error))
         return NULL;
     }
-  if (!found_primary_monitor)
-    determine_primary_monitor (monitor_config);
+
+  if (!found_primary_monitor &&
+      !determine_primary_monitor (monitor_config, error))
+    return NULL;
 
   if (!verify_monitor_config (monitor_config, error))
     return NULL;
@@ -278,7 +293,12 @@ grd_rdp_monitor_config_new_from_disp_monitor_layout (const DISPLAY_CONTROL_MONIT
   gboolean found_primary_monitor = FALSE;
   uint32_t i;
 
-  g_assert (monitor_count > 0);
+  if (monitor_count == 0)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Monitor Layout PDU contains no monitors");
+      return NULL;
+    }
 
   monitor_config = g_malloc0 (sizeof (GrdRdpMonitorConfig));
   monitor_config->is_virtual = TRUE;
@@ -292,7 +312,7 @@ grd_rdp_monitor_config_new_from_disp_monitor_layout (const DISPLAY_CONTROL_MONIT
       gboolean is_primary;
 
       is_primary = !!(monitor->Flags & DISPLAY_CONTROL_MONITOR_PRIMARY);
-      if (found_primary_monitor)
+      if (found_primary_monitor || monitor->Left != 0 || monitor->Top != 0)
         is_primary = FALSE;
       if (!found_primary_monitor && is_primary)
         found_primary_monitor = TRUE;
@@ -311,8 +331,10 @@ grd_rdp_monitor_config_new_from_disp_monitor_layout (const DISPLAY_CONTROL_MONIT
                                          error))
         return NULL;
     }
-  if (!found_primary_monitor)
-    determine_primary_monitor (monitor_config);
+
+  if (!found_primary_monitor &&
+      !determine_primary_monitor (monitor_config, error))
+    return NULL;
 
   if (!verify_monitor_config (monitor_config, error))
     return NULL;
