@@ -43,7 +43,7 @@ Architecture: linux-any
 Depends: ${misc:Depends},
          ${shlibs:Depends},
          fuse3,
-         libmutter-12-0 (>= 44~),
+         libmutter-13-0 (>= 45~),
          pipewire (>= 0.3.0),
          wireplumber,
 Breaks: gnome-control-center (<< 1:42)
