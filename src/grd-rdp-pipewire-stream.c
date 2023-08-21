@@ -43,7 +43,9 @@
 
 enum
 {
+  ERROR,
   CLOSED,
+  VIDEO_RESIZED,
 
   N_SIGNALS
 };
@@ -62,6 +64,12 @@ typedef struct
   GMutex buffer_mutex;
   gboolean is_locked;
 } BufferContext;
+
+typedef struct
+{
+  GMutex stream_mutex;
+  GrdRdpPipeWireStream *stream;
+} StreamContext;
 
 struct _GrdRdpFrame
 {
@@ -127,7 +135,13 @@ struct _GrdRdpPipeWireStream
 
   struct spa_hook pipewire_core_listener;
 
+  struct pw_registry *pipewire_registry;
+  struct spa_hook pipewire_registry_listener;
+
   GrdRdpBufferPool *buffer_pool;
+
+  StreamContext *frame_context;
+  StreamContext *pointer_context;
 
   GSource *frame_render_source;
   GMutex frame_mutex;
@@ -205,6 +219,37 @@ maybe_release_pipewire_buffer_lock (GrdRdpPipeWireStream *stream,
   g_mutex_unlock (&buffer_context->buffer_mutex);
 }
 
+static StreamContext *
+stream_context_new (GrdRdpPipeWireStream *stream)
+{
+  StreamContext *stream_context;
+
+  stream_context = g_new0 (StreamContext, 1);
+  stream_context->stream = stream;
+
+  g_mutex_init (&stream_context->stream_mutex);
+
+  return stream_context;
+}
+
+static void
+stream_context_free (gpointer data)
+{
+  StreamContext *stream_context = data;
+
+  g_mutex_clear (&stream_context->stream_mutex);
+
+  g_free (stream_context);
+}
+
+static void
+stream_context_release_stream (StreamContext *stream_context)
+{
+  g_mutex_lock (&stream_context->stream_mutex);
+  stream_context->stream = NULL;
+  g_mutex_unlock (&stream_context->stream_mutex);
+}
+
 static GrdRdpFrame *
 grd_rdp_frame_new (GrdRdpPipeWireStream     *stream,
                    GrdRdpFrameReadyCallback  callback,
@@ -275,27 +320,40 @@ grd_rdp_pipewire_stream_resize (GrdRdpPipeWireStream *stream,
 static gboolean
 render_frame (gpointer user_data)
 {
-  GrdRdpPipeWireStream *stream = GRD_RDP_PIPEWIRE_STREAM (user_data);
+  StreamContext *stream_context = user_data;
+  g_autoptr (GMutexLocker) locker = NULL;
+  GrdRdpPipeWireStream *stream;
+  GrdRdpSurface *rdp_surface;
+  gboolean had_frame = FALSE;
   GrdRdpFrame *frame;
+
+  locker = g_mutex_locker_new (&stream_context->stream_mutex);
+  if (!stream_context->stream)
+    return G_SOURCE_REMOVE;
+
+  stream = stream_context->stream;
+  rdp_surface = stream->rdp_surface;
 
   g_mutex_lock (&stream->frame_mutex);
   frame = g_steal_pointer (&stream->pending_frame);
 
-  if (frame && frame->buffer)
+  if (frame)
     {
-      g_mutex_lock (&stream->rdp_surface->surface_mutex);
-      g_assert (!stream->rdp_surface->new_framebuffer);
+      g_mutex_lock (&rdp_surface->surface_mutex);
+      had_frame = !!rdp_surface->pending_framebuffer;
+      g_clear_pointer (&rdp_surface->pending_framebuffer,
+                       grd_rdp_buffer_release);
 
-      stream->rdp_surface->new_framebuffer = g_steal_pointer (&frame->buffer);
-      g_mutex_unlock (&stream->rdp_surface->surface_mutex);
+      rdp_surface->pending_framebuffer = g_steal_pointer (&frame->buffer);
+      g_mutex_unlock (&rdp_surface->surface_mutex);
     }
   g_mutex_unlock (&stream->frame_mutex);
 
   if (!frame)
     return G_SOURCE_CONTINUE;
 
-  grd_session_rdp_maybe_encode_new_frame (stream->session_rdp,
-                                          stream->rdp_surface);
+  grd_session_rdp_notify_frame (stream->session_rdp, had_frame);
+  grd_session_rdp_maybe_encode_pending_frame (stream->session_rdp, rdp_surface);
 
   grd_rdp_frame_unref (frame);
 
@@ -305,16 +363,25 @@ render_frame (gpointer user_data)
 static gboolean
 render_mouse_pointer (gpointer user_data)
 {
-  GrdRdpPipeWireStream *stream = user_data;
+  StreamContext *stream_context = user_data;
   g_autoptr (GMutexLocker) locker = NULL;
+  GrdRdpPipeWireStream *stream;
   RdpPointer *rdp_pointer;
 
-  locker = g_mutex_locker_new (&stream->pointer_mutex);
+  locker = g_mutex_locker_new (&stream_context->stream_mutex);
+  if (!stream_context->stream)
+    return G_SOURCE_REMOVE;
+
+  stream = stream_context->stream;
+  g_mutex_lock (&stream->pointer_mutex);
   if (!stream->pending_pointer)
-    return G_SOURCE_CONTINUE;
+    {
+      g_mutex_unlock (&stream->pointer_mutex);
+      return G_SOURCE_CONTINUE;
+    }
 
   rdp_pointer = g_steal_pointer (&stream->pending_pointer);
-  g_clear_pointer (&locker, g_mutex_locker_free);
+  g_mutex_unlock (&stream->pointer_mutex);
 
   if (rdp_pointer->pointer_bitmap)
     {
@@ -354,17 +421,25 @@ static void
 create_render_sources (GrdRdpPipeWireStream *stream,
                        GMainContext         *render_context)
 {
+  StreamContext *frame_context, *pointer_context;
+
+  frame_context = stream_context_new (stream);
+  stream->frame_context = frame_context;
+
   stream->frame_render_source = g_source_new (&render_source_funcs,
                                               sizeof (GSource));
-  g_source_set_callback (stream->frame_render_source,
-                         render_frame, stream, NULL);
+  g_source_set_callback (stream->frame_render_source, render_frame,
+                         frame_context, stream_context_free);
   g_source_set_ready_time (stream->frame_render_source, -1);
   g_source_attach (stream->frame_render_source, render_context);
 
+  pointer_context = stream_context_new (stream);
+  stream->pointer_context = pointer_context;
+
   stream->pointer_render_source = g_source_new (&render_source_funcs,
                                                 sizeof (GSource));
-  g_source_set_callback (stream->pointer_render_source,
-                         render_mouse_pointer, stream, NULL);
+  g_source_set_callback (stream->pointer_render_source, render_mouse_pointer,
+                         pointer_context, stream_context_free);
   g_source_set_ready_time (stream->pointer_render_source, -1);
   g_source_attach (stream->pointer_render_source, render_context);
 }
@@ -422,8 +497,6 @@ release_all_buffers (GrdRdpPipeWireStream *stream)
   g_mutex_unlock (&stream->frame_mutex);
 
   g_mutex_lock (&stream->rdp_surface->surface_mutex);
-  g_clear_pointer (&stream->rdp_surface->new_framebuffer,
-                   grd_rdp_buffer_release);
   g_clear_pointer (&stream->rdp_surface->pending_framebuffer,
                    grd_rdp_buffer_release);
   g_mutex_unlock (&stream->rdp_surface->surface_mutex);
@@ -471,6 +544,9 @@ on_stream_param_changed (void                 *user_data,
         stream->session_rdp, GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
       return;
     }
+
+  grd_rdp_surface_set_size (stream->rdp_surface, width, height);
+  g_signal_emit (stream, signals[VIDEO_RESIZED], 0, width, height);
 
   pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof (params_buffer));
 
@@ -1167,12 +1243,31 @@ on_core_error (void       *user_data,
   g_warning ("PipeWire core error: id:%u %s", id, message);
 
   if (id == PW_ID_CORE && res == -EPIPE)
-    g_signal_emit (stream, signals[CLOSED], 0);
+    g_signal_emit (stream, signals[ERROR], 0);
 }
 
 static const struct pw_core_events core_events = {
   PW_VERSION_CORE_EVENTS,
   .error = on_core_error,
+};
+
+static void
+registry_event_global_remove (void     *user_data,
+                              uint32_t  id)
+{
+  GrdRdpPipeWireStream *stream = user_data;
+
+  if (id != stream->src_node_id)
+    return;
+
+  g_debug ("[RDP] PipeWire stream with node id %u closed", id);
+  g_signal_emit (stream, signals[CLOSED], 0);
+}
+
+static const struct pw_registry_events registry_events =
+{
+  .version = PW_VERSION_REGISTRY_EVENTS,
+  .global_remove = registry_event_global_remove,
 };
 
 GrdRdpPipeWireStream *
@@ -1230,6 +1325,19 @@ grd_rdp_pipewire_stream_new (GrdSessionRdp               *session_rdp,
                         &core_events,
                         stream);
 
+  stream->pipewire_registry = pw_core_get_registry (stream->pipewire_core,
+                                                    PW_VERSION_REGISTRY, 0);
+  if (!stream->pipewire_registry)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Failed to retrieve PipeWire registry");
+      return NULL;
+    }
+
+  pw_registry_add_listener (stream->pipewire_registry,
+                            &stream->pipewire_registry_listener,
+                            &registry_events, stream);
+
   if (!connect_to_stream (stream, virtual_monitor, rdp_surface->refresh_rate, error))
     return NULL;
 
@@ -1261,6 +1369,13 @@ grd_rdp_pipewire_stream_finalize (GObject *object)
 
   g_clear_pointer (&stream->pipewire_stream, pw_stream_destroy);
 
+  if (stream->pipewire_registry)
+    {
+      spa_hook_remove (&stream->pipewire_registry_listener);
+      pw_proxy_destroy ((struct pw_proxy *) stream->pipewire_registry);
+      stream->pipewire_registry = NULL;
+    }
+
   g_clear_pointer (&stream->pipewire_core, pw_core_disconnect);
   g_clear_pointer (&stream->pipewire_context, pw_context_destroy);
   if (stream->pipewire_source)
@@ -1268,6 +1383,9 @@ grd_rdp_pipewire_stream_finalize (GObject *object)
       g_source_destroy (stream->pipewire_source);
       g_clear_pointer (&stream->pipewire_source, g_source_unref);
     }
+
+  stream_context_release_stream (stream->pointer_context);
+  stream_context_release_stream (stream->frame_context);
 
   if (stream->pointer_render_source)
     {
@@ -1320,10 +1438,23 @@ grd_rdp_pipewire_stream_class_init (GrdRdpPipeWireStreamClass *klass)
 
   object_class->finalize = grd_rdp_pipewire_stream_finalize;
 
+  signals[ERROR] = g_signal_new ("error",
+                                  G_TYPE_FROM_CLASS (klass),
+                                  G_SIGNAL_RUN_LAST,
+                                  0,
+                                  NULL, NULL, NULL,
+                                  G_TYPE_NONE, 0);
   signals[CLOSED] = g_signal_new ("closed",
                                   G_TYPE_FROM_CLASS (klass),
                                   G_SIGNAL_RUN_LAST,
                                   0,
                                   NULL, NULL, NULL,
                                   G_TYPE_NONE, 0);
+  signals[VIDEO_RESIZED] = g_signal_new ("video-resized",
+                                         G_TYPE_FROM_CLASS (klass),
+                                         G_SIGNAL_RUN_LAST,
+                                         0,
+                                         NULL, NULL, NULL,
+                                         G_TYPE_NONE, 2,
+                                         G_TYPE_UINT, G_TYPE_UINT);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Pascal Nowack
+ * Copyright (C) 2020-2023 Pascal Nowack
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -23,7 +23,6 @@
 #include <gio/gio.h>
 #include <glib-object.h>
 
-#include "grd-rdp-monitor-config.h"
 #include "grd-session.h"
 #include "grd-types.h"
 
@@ -38,6 +37,7 @@ typedef enum _GrdSessionRdpError
   GRD_SESSION_RDP_ERROR_NONE,
   GRD_SESSION_RDP_ERROR_BAD_CAPS,
   GRD_SESSION_RDP_ERROR_BAD_MONITOR_DATA,
+  GRD_SESSION_RDP_ERROR_CLOSE_STACK_ON_DRIVER_FAILURE,
   GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED,
 } GrdSessionRdpError;
 
@@ -59,18 +59,25 @@ void grd_session_rdp_notify_error (GrdSessionRdp      *session_rdp,
 void grd_session_rdp_tear_down_channel (GrdSessionRdp *session_rdp,
                                         GrdRdpChannel  channel);
 
-void grd_session_rdp_submit_new_monitor_config (GrdSessionRdp       *session_rdp,
-                                                GrdRdpMonitorConfig *new_monitor_config);
+void grd_session_rdp_notify_new_desktop_size (GrdSessionRdp *session_rdp,
+                                              uint32_t       desktop_width,
+                                              uint32_t       desktop_height);
+
+void grd_session_rdp_notify_frame (GrdSessionRdp *session_rdp,
+                                   gboolean       replaced_previous_frame);
 
 void grd_session_rdp_notify_graphics_pipeline_reset (GrdSessionRdp *session_rdp);
 
 void grd_session_rdp_notify_graphics_pipeline_ready (GrdSessionRdp *session_rdp);
 
+uint32_t grd_session_rdp_acquire_stream_id (GrdSessionRdp     *session_rdp,
+                                            GrdRdpStreamOwner *stream_owner);
+
+void grd_session_rdp_release_stream_id (GrdSessionRdp *session_rdp,
+                                        uint32_t       stream_id);
+
 int grd_session_rdp_get_stride_for_width (GrdSessionRdp *session_rdp,
                                           int            width);
-
-void grd_session_rdp_maybe_encode_new_frame (GrdSessionRdp *session_rdp,
-                                             GrdRdpSurface *rdp_surface);
 
 void grd_session_rdp_maybe_encode_pending_frame (GrdSessionRdp *session_rdp,
                                                  GrdRdpSurface *rdp_surface);

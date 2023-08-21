@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Red Hat Inc.
+ * Copyright (C) 2023 Pascal Nowack
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -15,18 +15,30 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
  * 02111-1307, USA.
- *
- * Written by:
- *     Jonas Ådahl <jadahl@gmail.com>
  */
 
-#ifndef GRD_PRIVATE_H
-#define GRD_PRIVATE_H
+#include "config.h"
 
-#define GRD_DAEMON_USER_APPLICATION_ID "org.gnome.RemoteDesktop.User"
-#define MUTTER_REMOTE_DESKTOP_BUS_NAME "org.gnome.Mutter.RemoteDesktop"
-#define MUTTER_REMOTE_DESKTOP_OBJECT_PATH "/org/gnome/Mutter/RemoteDesktop"
-#define MUTTER_SCREEN_CAST_BUS_NAME "org.gnome.Mutter.ScreenCast"
-#define MUTTER_SCREEN_CAST_OBJECT_PATH "/org/gnome/Mutter/ScreenCast"
+#include "grd-rdp-stream-owner.h"
 
-#endif /* GRD_PRIVATE_H */
+G_DEFINE_ABSTRACT_TYPE (GrdRdpStreamOwner, grd_rdp_stream_owner, G_TYPE_OBJECT)
+
+void
+grd_rdp_stream_owner_notify_stream_created (GrdRdpStreamOwner *stream_owner,
+                                            uint32_t           stream_id,
+                                            GrdStream         *stream)
+{
+  GrdRdpStreamOwnerClass *klass = GRD_RDP_STREAM_OWNER_GET_CLASS (stream_owner);
+
+  klass->on_stream_created (stream_owner, stream_id, stream);
+}
+
+static void
+grd_rdp_stream_owner_init (GrdRdpStreamOwner *stream_owner)
+{
+}
+
+static void
+grd_rdp_stream_owner_class_init (GrdRdpStreamOwnerClass *klass)
+{
+}

@@ -31,8 +31,8 @@ def run_rdp_test_client():
   rdp_test_client = subprocess.Popen([rdp_test_client_path, '/v:127.0.0.1:3395', '/u:TestU', '/p:TestPw'],
                                      stderr=subprocess.STDOUT)
   rdp_test_client.wait()
-  if rdp_test_client.wait() != 0:
-    print("RDP test client exited incorrectly")
+  if rdp_test_client.returncode != 0:
+    print("RDP test client exited incorrectly: %d"%(rdp_test_client.returncode))
     rdp_client_failed = True
   else:
     rdp_client_failed = False
@@ -70,7 +70,8 @@ def remote_desktop_name_appeared_cb(name):
 def start_mutter():
   global mutter
   print("Starting mutter")
-  mutter = subprocess.Popen(['mutter', '--headless', '--wayland', '--no-x11'],
+  mutter_path = os.getenv('MUTTER_BIN', 'mutter')
+  mutter = subprocess.Popen([mutter_path, '--headless', '--wayland', '--no-x11'],
                             stderr=subprocess.STDOUT)
 
 def stop_mutter():

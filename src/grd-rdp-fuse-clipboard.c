@@ -551,7 +551,6 @@ clip_data_dir_new (GrdRdpFuseClipboard *rdp_fuse_clipboard,
   FuseFile *clip_data_dir;
 
   clip_data_dir = g_malloc0 (sizeof (FuseFile));
-  clip_data_dir->parent = rdp_fuse_clipboard->root_dir;
   clip_data_dir->filename_with_root =
     has_clip_data_id ? g_strdup_printf ("/%u", clip_data_id)
                      : g_strdup_printf ("/%lu", GRD_RDP_FUSE_CLIPBOARD_NO_CLIP_DATA_ID);
@@ -834,6 +833,19 @@ grd_rdp_fuse_clipboard_submit_file_contents_response (GrdRdpFuseClipboard *rdp_f
   if (!response_ok)
     {
       g_warning ("[RDP.CLIPRDR] Failed to retrieve file data for file \"%s\" "
+                 "from the client", rdp_fuse_request->fuse_file->filename);
+      g_mutex_unlock (&rdp_fuse_clipboard->filesystem_mutex);
+
+      fuse_reply_err (rdp_fuse_request->fuse_req, EIO);
+      g_free (rdp_fuse_request);
+      return;
+    }
+
+  if ((rdp_fuse_request->operation_type == FUSE_LL_OPERATION_LOOKUP ||
+       rdp_fuse_request->operation_type == FUSE_LL_OPERATION_GETATTR) &&
+      size != sizeof (uint64_t))
+    {
+      g_warning ("[RDP.CLIPRDR] Received invalid file size for file \"%s\" "
                  "from the client", rdp_fuse_request->fuse_file->filename);
       g_mutex_unlock (&rdp_fuse_clipboard->filesystem_mutex);
 

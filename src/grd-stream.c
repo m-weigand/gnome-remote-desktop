@@ -22,12 +22,9 @@
 
 #include "grd-stream.h"
 
-#include "grd-context.h"
-
 enum
 {
   READY,
-  CLOSED,
 
   N_SIGNALS
 };
@@ -36,16 +33,23 @@ static guint signals[N_SIGNALS];
 
 typedef struct _GrdStreamPrivate
 {
-  GrdContext *context;
-
+  uint32_t stream_id;
   uint32_t pipewire_node_id;
 
-  GrdDBusScreenCastStream *proxy;
+  GrdDBusMutterScreenCastStream *proxy;
 
   unsigned long pipewire_stream_added_id;
 } GrdStreamPrivate;
 
 G_DEFINE_TYPE_WITH_PRIVATE (GrdStream, grd_stream, G_TYPE_OBJECT)
+
+uint32_t
+grd_stream_get_stream_id (GrdStream *stream)
+{
+  GrdStreamPrivate *priv = grd_stream_get_instance_private (stream);
+
+  return priv->stream_id;
+}
 
 uint32_t
 grd_stream_get_pipewire_node_id (GrdStream *stream)
@@ -72,9 +76,9 @@ grd_stream_disconnect_proxy_signals (GrdStream *stream)
 }
 
 static void
-on_pipewire_stream_added (GrdDBusScreenCastStream *proxy,
-                          unsigned int             node_id,
-                          GrdStream               *stream)
+on_pipewire_stream_added (GrdDBusMutterScreenCastStream *proxy,
+                          unsigned int                   node_id,
+                          GrdStream                     *stream)
 {
   GrdStreamPrivate *priv = grd_stream_get_instance_private (stream);
 
@@ -84,8 +88,8 @@ on_pipewire_stream_added (GrdDBusScreenCastStream *proxy,
 }
 
 GrdStream *
-grd_stream_new (GrdContext              *context,
-                GrdDBusScreenCastStream *proxy)
+grd_stream_new (uint32_t                       stream_id,
+                GrdDBusMutterScreenCastStream *proxy)
 {
   GrdStream *stream;
   GrdStreamPrivate *priv;
@@ -93,7 +97,7 @@ grd_stream_new (GrdContext              *context,
   stream = g_object_new (GRD_TYPE_STREAM, NULL);
   priv = grd_stream_get_instance_private (stream);
 
-  priv->context = context;
+  priv->stream_id = stream_id;
   priv->proxy = proxy;
   priv->pipewire_stream_added_id =
     g_signal_connect (proxy, "pipewire-stream-added",
@@ -132,10 +136,4 @@ grd_stream_class_init (GrdStreamClass *klass)
                                  0,
                                  NULL, NULL, NULL,
                                  G_TYPE_NONE, 0);
-  signals[CLOSED] = g_signal_new ("closed",
-                                  G_TYPE_FROM_CLASS (klass),
-                                  G_SIGNAL_RUN_LAST,
-                                  0,
-                                  NULL, NULL, NULL,
-                                  G_TYPE_NONE, 0);
 }

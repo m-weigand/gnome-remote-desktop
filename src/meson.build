@@ -41,6 +41,8 @@ daemon_sources = files([
   'grd-context.h',
   'grd-daemon.c',
   'grd-daemon.h',
+  'grd-daemon-user.c',
+  'grd-daemon-user.h',
   'grd-damage-utils.c',
   'grd-damage-utils.h',
   'grd-debug.c',
@@ -58,6 +60,8 @@ daemon_sources = files([
   'grd-session.h',
   'grd-settings.c',
   'grd-settings.h',
+  'grd-settings-user.c',
+  'grd-settings-user.h',
   'grd-stream.c',
   'grd-stream.h',
   'grd-types.h',
@@ -104,6 +108,8 @@ if have_rdp
     'grd-rdp-gfx-surface.h',
     'grd-rdp-graphics-pipeline.c',
     'grd-rdp-graphics-pipeline.h',
+    'grd-rdp-layout-manager.c',
+    'grd-rdp-layout-manager.h',
     'grd-rdp-monitor-config.c',
     'grd-rdp-monitor-config.h',
     'grd-rdp-network-autodetection.c',
@@ -115,6 +121,8 @@ if have_rdp
     'grd-rdp-sam.h',
     'grd-rdp-server.c',
     'grd-rdp-server.h',
+    'grd-rdp-stream-owner.c',
+    'grd-rdp-stream-owner.h',
     'grd-rdp-surface.c',
     'grd-rdp-surface.h',
     'grd-rdp-telemetry.c',
@@ -164,14 +172,14 @@ daemon_sources += credentials_sources
 
 gen_daemon_sources = []
 
-gen_daemon_sources += gnome.gdbus_codegen('grd-dbus-screen-cast',
+gen_daemon_sources += gnome.gdbus_codegen('grd-dbus-mutter-screen-cast',
                                           'org.gnome.Mutter.ScreenCast.xml',
                                           interface_prefix: 'org.gnome.Mutter.',
-                                          namespace: 'GrdDBus')
-gen_daemon_sources += gnome.gdbus_codegen('grd-dbus-remote-desktop',
+                                          namespace: 'GrdDBusMutter')
+gen_daemon_sources += gnome.gdbus_codegen('grd-dbus-mutter-remote-desktop',
                                           'org.gnome.Mutter.RemoteDesktop.xml',
                                           interface_prefix: 'org.gnome.Mutter.',
-                                          namespace: 'GrdDBus')
+                                          namespace: 'GrdDBusMutter')
 
 daemon_sources += gen_daemon_sources
 
@@ -217,7 +225,7 @@ configure_file(input: 'gnome-remote-desktop.service.in',
                configuration: service_config,
                install_dir: servicedir)
 
-custom_target('gsettings-enums',
+generated_enums_schema = custom_target('gsettings-enums',
               input: 'grd-enums.h',
               output: 'org.gnome.desktop.remote-desktop.enums.xml',
               install: true,
@@ -237,4 +245,16 @@ generated_schema = configure_file(output: schema,
                                   copy: true)
 install_data(generated_schema,
              install_dir: schemadir)
-gnome.compile_schemas()
+
+compiled_schemas = custom_target('compile-schemas',
+  input: [
+    generated_schema,
+    generated_enums_schema,
+  ],
+  output: 'gschemas.compiled',
+  command: [
+    find_program('glib-compile-schemas'),
+    '--strict',
+    meson.current_build_dir(),
+  ],
+)
