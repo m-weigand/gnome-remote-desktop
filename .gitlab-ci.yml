@@ -1,15 +1,15 @@
 include:
-  - remote: 'https://gitlab.freedesktop.org/freedesktop/ci-templates/-/raw/34f4ade99434043f88e164933f570301fd18b125/templates/fedora.yml'
+  - remote: 'https://gitlab.freedesktop.org/freedesktop/ci-templates/-/raw/7402203527f61d6473d55ad701172d1606508c52/templates/fedora.yml'
 
 stages:
   - prepare
   - build
   - test
 
-.gnome-remote-desktop.fedora:35@common:
+.gnome-remote-desktop.fedora@common:
   variables:
-    FDO_DISTRIBUTION_VERSION: 36
-    BASE_TAG: '2023-03-02.0'
+    FDO_DISTRIBUTION_VERSION: 39
+    BASE_TAG: '2023-08-31.4.libei'
     FDO_UPSTREAM_REPO: GNOME/gnome-remote-desktop
     FDO_DISTRIBUTION_EXEC: |
       dnf -y update && dnf -y upgrade &&
@@ -28,6 +28,8 @@ stages:
                      'pkgconfig(tss2-mu)' 'pkgconfig(tss2-rc)' \
                      'pkgconfig(tss2-tctildr)' &&
       dnf install -y asciidoc &&
+      dnf builddep -y libei --setopt=install_weak_deps=False &&
+      dnf builddep -y mutter --setopt=install_weak_deps=False &&
 
       # To test
       dnf install -y openssl &&
@@ -37,23 +39,18 @@ stages:
       dnf install -y dbus-daemon python3-dbus python3-gobject \
                      gnome-settings-daemon mesa-dri-drivers mutter &&
 
-      dnf install -y git cmake gcc-c++ libusb1-devel &&
-      ./.gitlab-ci/install-cmake-project.sh \
-          -DCMAKE_BUILD_TYPE='None' \
-          -DWITH_ICU=ON \
-          -DWITH_SERVER=ON \
-          -DWITH_SHADOW=OFF \
-          -DWITH_PROXY=OFF \
-          -DWITH_CHANNELS=ON \
-          -DWITH_CLIENT_CHANNELS=ON \
-          -DWITH_SERVER_CHANNELS=ON \
-          https://github.com/FreeRDP/FreeRDP \
-          2.10.0 . &&
+      ./.gitlab-ci/install-meson-project.sh \
+        https://gitlab.freedesktop.org/libinput/libei.git \
+        1.0.901 . &&
+
+      ./.gitlab-ci/install-meson-project.sh \
+        https://gitlab.gnome.org/GNOME/mutter.git \
+        main . f0bb54079798e9e5cfb4fba4cef93873e4d32f03 &&
 
       dnf clean all
 
-.gnome-remote-desktop.fedora:35@x86_64:
-  extends: .gnome-remote-desktop.fedora:35@common
+.gnome-remote-desktop.fedora@x86_64:
+  extends: .gnome-remote-desktop.fedora@common
   variables:
     FDO_DISTRIBUTION_TAG: "x86_64-${BASE_TAG}"
 
@@ -72,7 +69,7 @@ default:
 build-fedora-container@x86_64:
   extends:
     - .fdo.container-build@fedora@x86_64
-    - .gnome-remote-desktop.fedora:35@x86_64
+    - .gnome-remote-desktop.fedora@x86_64
   stage: prepare
   variables:
     GIT_STRATEGY: none
@@ -80,7 +77,7 @@ build-fedora-container@x86_64:
 build-gnome-remote-desktop:
   extends:
     - .fdo.distribution-image@fedora
-    - .gnome-remote-desktop.fedora:35@x86_64
+    - .gnome-remote-desktop.fedora@x86_64
   stage: build
   script:
     - meson . build -Dbuildtype=debugoptimized -Dvnc=true --werror
@@ -96,7 +93,7 @@ build-gnome-remote-desktop:
 test-gnome-remote-desktop:
   extends:
     - .fdo.distribution-image@fedora
-    - .gnome-remote-desktop.fedora:35@x86_64
+    - .gnome-remote-desktop.fedora@x86_64
   stage: test
   dependencies:
     - build-gnome-remote-desktop
