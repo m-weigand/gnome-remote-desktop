@@ -1,8 +1,8 @@
-gnome-remote-desktop (45.0-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (45.0-1) experimental; urgency=medium
 
   * New upstream release (LP: #2038108)
 
- -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 02 Oct 2023 12:05:07 -0400
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 02 Oct 2023 12:14:30 -0400
 
 gnome-remote-desktop (45~rc-1) experimental; urgency=medium
 
