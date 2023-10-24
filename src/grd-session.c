@@ -125,7 +125,7 @@ grd_session_get_context (GrdSession *session)
 }
 
 static void
-clear_session (GrdSession *session)
+clear_ei (GrdSession *session)
 {
   GrdSessionPrivate *priv = grd_session_get_instance_private (session);
 
@@ -140,6 +140,14 @@ clear_session (GrdSession *session)
   g_clear_pointer (&priv->ei_seat, ei_seat_unref);
   g_clear_pointer (&priv->ei_source, g_source_destroy);
   g_clear_pointer (&priv->ei, ei_unref);
+}
+
+static void
+clear_session (GrdSession *session)
+{
+  GrdSessionPrivate *priv = grd_session_get_instance_private (session);
+
+  clear_ei (session);
 
   g_clear_signal_handler (&priv->caps_lock_state_changed_id,
                           priv->remote_desktop_session);
@@ -159,6 +167,8 @@ grd_session_stop (GrdSession *session)
     return;
 
   GRD_SESSION_GET_CLASS (session)->stop (session);
+
+  clear_ei (session);
 
   if (priv->remote_desktop_session && priv->started)
     {
@@ -411,6 +421,8 @@ pick_keycode_for_keysym_in_current_group (GrdSession *session,
   uint32_t keycode, layout;
   xkb_keycode_t min_keycode, max_keycode;
 
+  g_assert (keycode_out);
+
   xkb_keymap = priv->xkb_keymap;
   xkb_state = priv->xkb_state;
 
@@ -532,7 +544,7 @@ grd_session_notify_keyboard_keysym (GrdSession *session,
   int64_t now_us;
   uint32_t keycode = 0, level = 0, evcode = 0;
 
-  if (!priv->xkb_state)
+  if (!priv->xkb_state || !priv->ei_keyboard)
     return;
 
   now_us = g_get_monotonic_time ();
@@ -612,17 +624,30 @@ grd_session_notify_pointer_axis_discrete (GrdSession    *session,
 }
 
 void
-grd_session_notify_pointer_motion_absolute (GrdSession *session,
-                                            GrdStream  *stream,
-                                            double      x,
-                                            double      y)
+grd_session_notify_pointer_motion_absolute (GrdSession                     *session,
+                                            GrdStream                      *stream,
+                                            const GrdEventPointerMotionAbs *motion_abs)
 {
   GrdSessionPrivate *priv = grd_session_get_instance_private (session);
   GrdRegion *region;
+  double scale_x;
+  double scale_y;
+  double x;
+  double y;
+
+  g_assert (motion_abs->input_rect_width > 0);
+  g_assert (motion_abs->input_rect_height > 0);
 
   region = g_hash_table_lookup (priv->regions, grd_stream_get_mapping_id (stream));
   if (!region)
     return;
+
+  scale_x = ((double) motion_abs->input_rect_width) /
+            ei_region_get_width (region->ei_region);
+  scale_y = ((double) motion_abs->input_rect_height) /
+            ei_region_get_height (region->ei_region);
+  x = motion_abs->x / scale_x;
+  y = motion_abs->y / scale_y;
 
   ei_device_pointer_motion_absolute (region->ei_device,
                                      ei_region_get_x (region->ei_region) + x,
@@ -1116,7 +1141,7 @@ setup_xkb_keymap (GrdSession        *session,
                        "Keyboard layout was empty");
           goto err;
         }
-      else if (errno == EINTR)
+      else if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
         {
           continue;
         }
@@ -1192,12 +1217,37 @@ grd_region_free (GrdRegion *region)
   g_free (region);
 }
 
+static gboolean
+should_dispose_region (gpointer key,
+                       gpointer value,
+                       gpointer user_data)
+{
+  struct ei_device *ei_device = user_data;
+  GrdRegion *region = value;
+
+  return region->ei_device == ei_device;
+}
+
+static void
+maybe_dispose_ei_abs_pointer (GrdSession *session)
+{
+  GrdSessionPrivate *priv = grd_session_get_instance_private (session);
+
+  if (!priv->ei_abs_pointer)
+    return;
+
+  g_hash_table_foreach_remove (priv->regions,
+                               should_dispose_region,
+                               priv->ei_abs_pointer);
+  g_clear_pointer (&priv->ei_abs_pointer, ei_device_unref);
+}
+
 static void
 process_regions (GrdSession       *session,
                  struct ei_device *ei_device)
 {
   GrdSessionPrivate *priv = grd_session_get_instance_private (session);
-  int i = 0;
+  size_t i = 0;
   struct ei_region *ei_region;
 
   while ((ei_region = ei_device_get_region (ei_device, i++)))
@@ -1208,6 +1258,13 @@ process_regions (GrdSession       *session,
       mapping_id = ei_region_get_mapping_id (ei_region);
       if (!mapping_id)
         continue;
+
+      g_debug ("ei: mapping-id: %s, [x, y, w, h] = [%u, %u, %u, %u]", mapping_id,
+               ei_region_get_x (ei_region), ei_region_get_y (ei_region),
+               ei_region_get_width (ei_region), ei_region_get_height (ei_region));
+
+      g_assert (ei_region_get_width (ei_region) > 0);
+      g_assert (ei_region_get_height (ei_region) > 0);
 
       region = g_new0 (GrdRegion, 1);
       region->ei_device = ei_device_ref (ei_device);
@@ -1270,7 +1327,7 @@ grd_ei_source_dispatch (gpointer user_data)
               }
             if (ei_device_has_capability (device, EI_DEVICE_CAP_POINTER_ABSOLUTE))
               {
-                g_clear_pointer (&priv->ei_abs_pointer, ei_device_unref);
+                maybe_dispose_ei_abs_pointer (session);
                 priv->ei_abs_pointer = ei_device_ref (device);
                 process_regions (session, device);
               }
@@ -1286,7 +1343,7 @@ grd_ei_source_dispatch (gpointer user_data)
           break;
         case EI_EVENT_DEVICE_REMOVED:
           if (ei_event_get_device (event) == priv->ei_abs_pointer)
-            g_clear_pointer (&priv->ei_abs_pointer, ei_device_unref);
+            maybe_dispose_ei_abs_pointer (session);
           if (ei_event_get_device (event) == priv->ei_keyboard)
             g_clear_pointer (&priv->ei_keyboard, ei_device_unref);
           break;
@@ -1509,11 +1566,11 @@ grd_session_finalize (GObject *object)
     g_assert (g_cancellable_is_cancelled (priv->cancellable));
   g_clear_object (&priv->cancellable);
 
+  g_clear_pointer (&priv->regions, g_hash_table_unref);
+
   g_assert (!priv->xkb_state);
   g_assert (!priv->xkb_keymap);
   g_assert (!priv->xkb_context);
-
-  g_assert (!priv->regions);
 
   g_assert (!priv->ei_keyboard);
   g_assert (!priv->ei_abs_pointer);
