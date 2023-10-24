@@ -66,6 +66,17 @@ typedef enum _GrdPointerAxis
   GRD_POINTER_AXIS_HORIZONTAL
 } GrdPointerAxis;
 
+typedef struct _GrdEventPointerMotionAbs
+{
+  /* Size of the input region */
+  uint32_t input_rect_width;
+  uint32_t input_rect_height;
+
+  /* Absolute pointer position in the input region */
+  double x;
+  double y;
+} GrdEventPointerMotionAbs;
+
 struct _GrdSessionClass
 {
   GObjectClass parent_class;
@@ -117,10 +128,9 @@ void grd_session_notify_pointer_axis_discrete (GrdSession     *session,
                                                GrdPointerAxis  axis,
                                                int             steps);
 
-void grd_session_notify_pointer_motion_absolute (GrdSession *session,
-                                                 GrdStream  *stream,
-                                                 double      x,
-                                                 double      y);
+void grd_session_notify_pointer_motion_absolute (GrdSession                     *session,
+                                                 GrdStream                      *stream,
+                                                 const GrdEventPointerMotionAbs *motion_abs);
 
 gboolean grd_session_enable_clipboard (GrdSession   *session,
                                        GrdClipboard *clipboard,
