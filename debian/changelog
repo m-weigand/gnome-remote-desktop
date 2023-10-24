@@ -1,8 +1,9 @@
-gnome-remote-desktop (45.1-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (45.1-1) experimental; urgency=medium
 
+  * Team upload
   * New upstream release
 
- -- Amin Bandali <bandali@ubuntu.com>  Tue, 24 Oct 2023 13:39:18 -0400
+ -- Amin Bandali <bandali@ubuntu.com>  Tue, 24 Oct 2023 13:48:57 -0400
 
 gnome-remote-desktop (45.0-1) experimental; urgency=medium
 
