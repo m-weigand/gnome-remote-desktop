@@ -1,3 +1,10 @@
+gnome-remote-desktop (45.1-2) experimental; urgency=medium
+
+  * Stop using debian/control.in and dh_gnome_clean
+  * Run wrap-and-sort
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Thu, 25 Jan 2024 09:46:57 -0500
+
 gnome-remote-desktop (45.1-1) experimental; urgency=medium
 
   * Team upload
