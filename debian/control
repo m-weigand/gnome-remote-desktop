@@ -2,13 +2,15 @@ Source: gnome-remote-desktop
 Section: gnome
 Priority: optional
 Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
-Uploaders: Amin Bandali <bandali@ubuntu.com>, Jeremy Bícha <jbicha@ubuntu.com>, Marco Trevisan (Treviño) <marco@ubuntu.com>
-Build-Depends: debhelper-compat (= 13),
-               asciidoc-base,
-               dh-sequence-gnome,
-               freerdp2-dev (>= 2.10.0),
+Uploaders: Amin Bandali <bandali@ubuntu.com>,
+           Jeremy Bícha <jbicha@ubuntu.com>,
+           Marco Trevisan (Treviño) <marco@ubuntu.com>
+Build-Depends: asciidoc-base,
                dbus-daemon <!nocheck>,
+               debhelper-compat (= 13),
+               dh-sequence-gnome,
                docbook-xml,
+               freerdp2-dev (>= 2.10.0),
                libcairo2-dev,
                libdrm-dev,
                libei-dev (>= 1.0.901),
@@ -32,7 +34,7 @@ Build-Depends: debhelper-compat (= 13),
                python3-dbus <!nocheck>,
                python3-gi <!nocheck>,
                systemd,
-               wireplumber <!nocheck>,
+               wireplumber <!nocheck>
 Standards-Version: 4.6.2
 Rules-Requires-Root: no
 Vcs-Browser: https://salsa.debian.org/gnome-team/gnome-remote-desktop
@@ -41,12 +43,12 @@ Homepage: https://wiki.gnome.org/Projects/Mutter/RemoteDesktop
 
 Package: gnome-remote-desktop
 Architecture: linux-any
-Depends: ${misc:Depends},
-         ${shlibs:Depends},
-         fuse3,
+Depends: fuse3,
          libmutter-13-0 (>= 45~rc),
          pipewire (>= 0.3.0),
          wireplumber,
+         ${misc:Depends},
+         ${shlibs:Depends}
 Breaks: gnome-control-center (<< 1:42)
 Description: Remote desktop daemon for GNOME using PipeWire
  This daemon enables GNOME to offer remote desktop sharing and control
