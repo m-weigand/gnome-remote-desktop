@@ -36,3 +36,5 @@ override_dh_auto_test:
 # https://launchpad.net/bugs/1973028
 override_dh_installsystemduser:
 	dh_installsystemduser --no-enable
+
+override_dh_gnome_clean:
