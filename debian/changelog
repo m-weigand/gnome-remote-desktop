@@ -1,3 +1,11 @@
+gnome-remote-desktop (45.1-3) UNRELEASED; urgency=medium
+
+  * Stop marking libgudev-1.0-dev as <!nocheck>.
+    It is needed at build-time, even when not intending to run the
+    test suite. (Closes: #1029451)
+
+ -- Simon McVittie <smcv@debian.org>  Sun, 17 Mar 2024 17:54:50 +0000
+
 gnome-remote-desktop (45.1-2) experimental; urgency=medium
 
   * Stop using debian/control.in and dh_gnome_clean
