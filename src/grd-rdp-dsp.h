@@ -31,12 +31,36 @@ typedef enum _GrdRdpDspCodec
 {
   GRD_RDP_DSP_CODEC_NONE,
   GRD_RDP_DSP_CODEC_AAC,
+  GRD_RDP_DSP_CODEC_ALAW,
+  GRD_RDP_DSP_CODEC_OPUS,
 } GrdRdpDspCodec;
 
-GrdRdpDsp *grd_rdp_dsp_new (uint32_t   n_samples_per_sec,
-                            uint32_t   n_channels,
-                            uint32_t   bitrate_aac,
-                            GError   **error);
+typedef enum
+{
+  GRD_RDP_DSP_CREATE_FLAG_NONE = 0,
+  GRD_RDP_DSP_CREATE_FLAG_ENCODER = 1 << 0,
+  GRD_RDP_DSP_CREATE_FLAG_DECODER = 1 << 1,
+} GrdRdpDspCreateFlag;
+
+typedef struct
+{
+  GrdRdpDspCreateFlag create_flags;
+
+  /* Encoder */
+  uint32_t n_samples_per_sec_aac;
+  uint32_t n_samples_per_sec_opus;
+  uint32_t n_channels;
+  uint32_t bitrate_aac;
+  uint32_t bitrate_opus;
+} GrdRdpDspDescriptor;
+
+GrdRdpDsp *grd_rdp_dsp_new (const GrdRdpDspDescriptor  *dsp_descriptor,
+                            GError                    **error);
+
+const char *grd_rdp_dsp_codec_to_string (GrdRdpDspCodec dsp_codec);
+
+uint32_t grd_rdp_dsp_get_frames_per_packet (GrdRdpDsp      *rdp_dsp,
+                                            GrdRdpDspCodec  codec);
 
 gboolean grd_rdp_dsp_encode (GrdRdpDsp       *rdp_dsp,
                              GrdRdpDspCodec   codec,
@@ -44,6 +68,13 @@ gboolean grd_rdp_dsp_encode (GrdRdpDsp       *rdp_dsp,
                              uint32_t         input_size,
                              uint32_t         input_elem_size,
                              uint8_t        **output_data,
+                             uint32_t        *output_size);
+
+gboolean grd_rdp_dsp_decode (GrdRdpDsp       *rdp_dsp,
+                             GrdRdpDspCodec   codec,
+                             uint8_t         *input_data,
+                             uint32_t         input_size,
+                             int16_t        **output_data,
                              uint32_t        *output_size);
 
 #endif /* GRD_RDP_DSP_H */

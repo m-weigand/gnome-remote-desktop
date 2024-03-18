@@ -39,11 +39,13 @@ typedef enum _GrdSessionRdpError
   GRD_SESSION_RDP_ERROR_BAD_MONITOR_DATA,
   GRD_SESSION_RDP_ERROR_CLOSE_STACK_ON_DRIVER_FAILURE,
   GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED,
+  GRD_SESSION_RDP_ERROR_SERVER_REDIRECTION,
 } GrdSessionRdpError;
 
 typedef enum _GrdRdpChannel
 {
   GRD_RDP_CHANNEL_NONE,
+  GRD_RDP_CHANNEL_AUDIO_INPUT,
   GRD_RDP_CHANNEL_AUDIO_PLAYBACK,
   GRD_RDP_CHANNEL_DISPLAY_CONTROL,
   GRD_RDP_CHANNEL_TELEMETRY,
@@ -53,22 +55,13 @@ GrdSessionRdp *grd_session_rdp_new (GrdRdpServer      *rdp_server,
                                     GSocketConnection *connection,
                                     GrdHwAccelNvidia  *hwaccel_nvidia);
 
+GrdRdpSessionMetrics *grd_session_rdp_get_session_metrics (GrdSessionRdp *session_rdp);
+
 void grd_session_rdp_notify_error (GrdSessionRdp      *session_rdp,
                                    GrdSessionRdpError  error_info);
 
 void grd_session_rdp_tear_down_channel (GrdSessionRdp *session_rdp,
                                         GrdRdpChannel  channel);
-
-void grd_session_rdp_notify_new_desktop_size (GrdSessionRdp *session_rdp,
-                                              uint32_t       desktop_width,
-                                              uint32_t       desktop_height);
-
-void grd_session_rdp_notify_frame (GrdSessionRdp *session_rdp,
-                                   gboolean       replaced_previous_frame);
-
-void grd_session_rdp_notify_graphics_pipeline_reset (GrdSessionRdp *session_rdp);
-
-void grd_session_rdp_notify_graphics_pipeline_ready (GrdSessionRdp *session_rdp);
 
 uint32_t grd_session_rdp_acquire_stream_id (GrdSessionRdp     *session_rdp,
                                             GrdRdpStreamOwner *stream_owner);
@@ -76,19 +69,16 @@ uint32_t grd_session_rdp_acquire_stream_id (GrdSessionRdp     *session_rdp,
 void grd_session_rdp_release_stream_id (GrdSessionRdp *session_rdp,
                                         uint32_t       stream_id);
 
-int grd_session_rdp_get_stride_for_width (GrdSessionRdp *session_rdp,
-                                          int            width);
+void grd_session_rdp_maybe_encode_pending_frame (GrdSessionRdp       *session_rdp,
+                                                 GrdRdpSurface       *rdp_surface,
+                                                 GrdRdpRenderContext *render_context);
 
-void grd_session_rdp_maybe_encode_pending_frame (GrdSessionRdp *session_rdp,
-                                                 GrdRdpSurface *rdp_surface);
+gboolean grd_session_rdp_is_client_mstsc (GrdSessionRdp *session_rdp);
 
-void grd_session_rdp_update_pointer (GrdSessionRdp *session_rdp,
-                                     uint16_t       hotspot_x,
-                                     uint16_t       hotspot_y,
-                                     uint16_t       width,
-                                     uint16_t       height,
-                                     uint8_t       *data);
-
-void grd_session_rdp_hide_pointer (GrdSessionRdp *session_rdp);
+gboolean grd_session_rdp_send_server_redirection (GrdSessionRdp *session_rdp,
+                                                  const char    *routing_token,
+                                                  const char    *username,
+                                                  const char    *password,
+                                                  const char    *certificate);
 
 #endif /* GRD_SESSION_RDP_H */

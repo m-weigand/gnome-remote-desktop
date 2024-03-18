@@ -23,7 +23,7 @@
 
 #include "grd-rdp-gfx-frame-log.h"
 #include "grd-rdp-surface.h"
-#include "grd-session-rdp.h"
+#include "grd-rdp-surface-renderer.h"
 
 #define ACTIVATE_THROTTLING_TH_DEFAULT 2
 #define DEACTIVATE_THROTTLING_TH_DEFAULT 1
@@ -39,7 +39,6 @@ struct _GrdRdpGfxFrameController
 {
   GObject parent;
 
-  GrdSessionRdp *session_rdp;
   GrdRdpSurface *rdp_surface;
 
   GrdRdpGfxFrameLog *frame_log;
@@ -62,7 +61,10 @@ get_activate_throttling_th_from_rtt (GrdRdpGfxFrameController *frame_controller,
                                      int64_t                   rtt_us)
 {
   GrdRdpSurface *rdp_surface = frame_controller->rdp_surface;
-  int64_t refresh_rate = rdp_surface->refresh_rate;
+  GrdRdpSurfaceRenderer *surface_renderer =
+    grd_rdp_surface_get_surface_renderer (rdp_surface);
+  int64_t refresh_rate =
+    grd_rdp_surface_renderer_get_refresh_rate (surface_renderer);
   uint32_t activate_throttling_th;
   uint32_t delayed_frames;
 
@@ -81,6 +83,10 @@ grd_rdp_gfx_frame_controller_unack_frame (GrdRdpGfxFrameController *frame_contro
 {
   GrdRdpSurface *rdp_surface = frame_controller->rdp_surface;
   GrdRdpGfxFrameLog *frame_log = frame_controller->frame_log;
+  GrdRdpSurfaceRenderer *surface_renderer =
+    grd_rdp_surface_get_surface_renderer (rdp_surface);
+  gboolean rendering_suspended =
+    grd_rdp_surface_renderer_is_rendering_suspended (surface_renderer);
   uint32_t current_activate_throttling_th;
   uint32_t n_unacked_frames;
   uint32_t enc_rate = 0;
@@ -101,7 +107,7 @@ grd_rdp_gfx_frame_controller_unack_frame (GrdRdpGfxFrameController *frame_contro
       if (n_unacked_frames >= frame_controller->activate_throttling_th)
         {
           frame_controller->throttling_state = THROTTLING_STATE_ACTIVE;
-          rdp_surface->encoding_suspended = TRUE;
+          grd_rdp_surface_renderer_update_suspension_state (surface_renderer, TRUE);
         }
       break;
     case THROTTLING_STATE_ACTIVE:
@@ -112,16 +118,17 @@ grd_rdp_gfx_frame_controller_unack_frame (GrdRdpGfxFrameController *frame_contro
       if (current_activate_throttling_th < frame_controller->activate_throttling_th)
         {
           frame_controller->throttling_state = THROTTLING_STATE_ACTIVE_LOWERING_LATENCY;
-          rdp_surface->encoding_suspended = TRUE;
+          grd_rdp_surface_renderer_update_suspension_state (surface_renderer, TRUE);
         }
       else
         {
           frame_controller->activate_throttling_th = current_activate_throttling_th;
-          rdp_surface->encoding_suspended = enc_rate > ack_rate + 1;
+          grd_rdp_surface_renderer_update_suspension_state (surface_renderer,
+                                                            enc_rate > ack_rate + 1);
         }
       break;
     case THROTTLING_STATE_ACTIVE_LOWERING_LATENCY:
-      g_assert (rdp_surface->encoding_suspended);
+      g_assert (rendering_suspended);
       break;
     }
 }
@@ -133,7 +140,8 @@ grd_rdp_gfx_frame_controller_ack_frame (GrdRdpGfxFrameController *frame_controll
 {
   GrdRdpSurface *rdp_surface = frame_controller->rdp_surface;
   GrdRdpGfxFrameLog *frame_log = frame_controller->frame_log;
-  gboolean encoding_was_suspended;
+  GrdRdpSurfaceRenderer *surface_renderer =
+    grd_rdp_surface_get_surface_renderer (rdp_surface);
   uint32_t current_activate_throttling_th;
   uint32_t n_unacked_frames;
   uint32_t enc_rate = 0;
@@ -141,7 +149,6 @@ grd_rdp_gfx_frame_controller_ack_frame (GrdRdpGfxFrameController *frame_controll
 
   grd_rdp_gfx_frame_log_ack_tracked_frame (frame_log, frame_id, ack_time_us);
 
-  encoding_was_suspended = rdp_surface->encoding_suspended;
   n_unacked_frames = grd_rdp_gfx_frame_log_get_unacked_frames_count (frame_log);
   grd_rdp_gfx_frame_log_update_rates (frame_log, &enc_rate, &ack_rate);
 
@@ -153,7 +160,7 @@ grd_rdp_gfx_frame_controller_ack_frame (GrdRdpGfxFrameController *frame_controll
       if (n_unacked_frames <= frame_controller->deactivate_throttling_th)
         {
           frame_controller->throttling_state = THROTTLING_STATE_INACTIVE;
-          rdp_surface->encoding_suspended = FALSE;
+          grd_rdp_surface_renderer_update_suspension_state (surface_renderer, FALSE);
           break;
         }
 
@@ -163,12 +170,13 @@ grd_rdp_gfx_frame_controller_ack_frame (GrdRdpGfxFrameController *frame_controll
       if (current_activate_throttling_th < frame_controller->activate_throttling_th)
         {
           frame_controller->throttling_state = THROTTLING_STATE_ACTIVE_LOWERING_LATENCY;
-          rdp_surface->encoding_suspended = TRUE;
+          grd_rdp_surface_renderer_update_suspension_state (surface_renderer, TRUE);
         }
       else
         {
           frame_controller->activate_throttling_th = current_activate_throttling_th;
-          rdp_surface->encoding_suspended = enc_rate > ack_rate;
+          grd_rdp_surface_renderer_update_suspension_state (surface_renderer,
+                                                            enc_rate > ack_rate);
         }
       break;
     case THROTTLING_STATE_ACTIVE_LOWERING_LATENCY:
@@ -179,16 +187,20 @@ grd_rdp_gfx_frame_controller_ack_frame (GrdRdpGfxFrameController *frame_controll
       if (n_unacked_frames < current_activate_throttling_th)
         {
           frame_controller->throttling_state = THROTTLING_STATE_INACTIVE;
-          rdp_surface->encoding_suspended = FALSE;
+          grd_rdp_surface_renderer_update_suspension_state (surface_renderer, FALSE);
         }
       else if (n_unacked_frames == current_activate_throttling_th)
         {
           frame_controller->throttling_state = THROTTLING_STATE_ACTIVE;
-          rdp_surface->encoding_suspended = enc_rate > ack_rate;
+          grd_rdp_surface_renderer_update_suspension_state (surface_renderer,
+                                                            enc_rate > ack_rate);
         }
       else if (n_unacked_frames > current_activate_throttling_th)
         {
-          g_assert (rdp_surface->encoding_suspended);
+          gboolean rendering_suspended =
+            grd_rdp_surface_renderer_is_rendering_suspended (surface_renderer);
+
+          g_assert (rendering_suspended);
         }
       else
         {
@@ -196,9 +208,6 @@ grd_rdp_gfx_frame_controller_ack_frame (GrdRdpGfxFrameController *frame_controll
         }
       break;
     }
-
-  if (encoding_was_suspended && !rdp_surface->encoding_suspended)
-    grd_rdp_surface_trigger_render_source (rdp_surface);
 }
 
 static void
@@ -206,6 +215,10 @@ reevaluate_encoding_suspension_state (GrdRdpGfxFrameController *frame_controller
 {
   GrdRdpSurface *rdp_surface = frame_controller->rdp_surface;
   GrdRdpGfxFrameLog *frame_log = frame_controller->frame_log;
+  GrdRdpSurfaceRenderer *surface_renderer =
+    grd_rdp_surface_get_surface_renderer (rdp_surface);
+  gboolean rendering_suspended =
+    grd_rdp_surface_renderer_is_rendering_suspended (surface_renderer);
   uint32_t n_unacked_frames;
   uint32_t enc_rate = 0;
   uint32_t ack_rate = 0;
@@ -223,14 +236,14 @@ reevaluate_encoding_suspension_state (GrdRdpGfxFrameController *frame_controller
       if (n_unacked_frames >= frame_controller->activate_throttling_th)
         {
           frame_controller->throttling_state = THROTTLING_STATE_ACTIVE;
-          rdp_surface->encoding_suspended = TRUE;
+          grd_rdp_surface_renderer_update_suspension_state (surface_renderer, TRUE);
         }
       break;
     case THROTTLING_STATE_ACTIVE:
       g_assert (frame_controller->activate_throttling_th >
                 frame_controller->deactivate_throttling_th);
       g_assert (n_unacked_frames > frame_controller->deactivate_throttling_th);
-      g_assert (rdp_surface->encoding_suspended);
+      g_assert (rendering_suspended);
       break;
     case THROTTLING_STATE_ACTIVE_LOWERING_LATENCY:
       /*
@@ -256,17 +269,13 @@ void
 grd_rdp_gfx_frame_controller_clear_all_unacked_frames (GrdRdpGfxFrameController *frame_controller)
 {
   GrdRdpSurface *rdp_surface = frame_controller->rdp_surface;
-  gboolean encoding_was_suspended;
+  GrdRdpSurfaceRenderer *surface_renderer =
+    grd_rdp_surface_get_surface_renderer (rdp_surface);
 
   grd_rdp_gfx_frame_log_clear (frame_controller->frame_log);
 
-  encoding_was_suspended = rdp_surface->encoding_suspended;
-
   frame_controller->throttling_state = THROTTLING_STATE_INACTIVE;
-  rdp_surface->encoding_suspended = FALSE;
-
-  if (encoding_was_suspended)
-    grd_rdp_surface_trigger_render_source (rdp_surface);
+  grd_rdp_surface_renderer_update_suspension_state (surface_renderer, FALSE);
 }
 
 void
@@ -277,13 +286,11 @@ grd_rdp_gfx_frame_controller_notify_new_round_trip_time (GrdRdpGfxFrameControlle
 }
 
 GrdRdpGfxFrameController *
-grd_rdp_gfx_frame_controller_new (GrdSessionRdp *session_rdp,
-                                  GrdRdpSurface *rdp_surface)
+grd_rdp_gfx_frame_controller_new (GrdRdpSurface *rdp_surface)
 {
   GrdRdpGfxFrameController *frame_controller;
 
   frame_controller = g_object_new (GRD_TYPE_RDP_GFX_FRAME_CONTROLLER, NULL);
-  frame_controller->session_rdp = session_rdp;
   frame_controller->rdp_surface = rdp_surface;
 
   return frame_controller;

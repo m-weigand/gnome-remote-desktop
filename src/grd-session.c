@@ -240,10 +240,11 @@ on_screen_cast_stream_proxy_acquired (GObject      *object,
   priv = grd_session_get_instance_private (session);
   klass = GRD_SESSION_GET_CLASS (session);
 
-  stream = grd_stream_new (async_context->stream_id, stream_proxy, &error);
+  stream = grd_stream_new (async_context->stream_id, stream_proxy,
+                           priv->cancellable, &error);
   if (!stream)
     {
-      g_warning ("Failed create stream: %s", error->message);
+      g_warning ("Failed to create stream: %s", error->message);
       grd_session_stop (async_context->session);
       return;
     }
@@ -743,42 +744,6 @@ grd_session_set_selection (GrdSession *session,
     g_warning ("Failed to set selection: %s", error->message);
 }
 
-static int
-acquire_fd_from_list (GUnixFDList  *fd_list,
-                      int           fd_idx,
-                      GError      **error)
-{
-  int fd;
-  int fd_flags;
-
-  fd = g_unix_fd_list_get (fd_list, fd_idx, error);
-  if (fd == -1)
-    {
-      g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
-                   "fcntl: %s", g_strerror (errno));
-      return -1;
-    }
-
-  fd_flags = fcntl (fd, F_GETFD);
-  if (fd_flags == -1)
-    {
-      close (fd);
-      g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
-                   "fcntl: %s", g_strerror (errno));
-      return -1;
-    }
-
-  if (fcntl (fd, F_SETFD, fd_flags | FD_CLOEXEC) == -1)
-    {
-      close (fd);
-      g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
-                   "fcntl: %s", g_strerror (errno));
-      return -1;
-    }
-
-  return fd;
-}
-
 void
 grd_session_selection_write (GrdSession    *session,
                              unsigned int   serial,
@@ -809,7 +774,7 @@ grd_session_selection_write (GrdSession    *session,
     }
 
   g_variant_get (fd_variant, "h", &fd_idx);
-  fd = acquire_fd_from_list (fd_list, fd_idx, &error);
+  fd = g_unix_fd_list_get (fd_list, fd_idx, &error);
   if (fd == -1)
     {
       g_warning ("Failed to acquire file descriptor for serial %u: %s",
@@ -854,7 +819,7 @@ grd_session_selection_read (GrdSession  *session,
     }
 
   g_variant_get (fd_variant, "h", &fd_idx);
-  fd = acquire_fd_from_list (fd_list, fd_idx, &error);
+  fd = g_unix_fd_list_get (fd_list, fd_idx, &error);
   if (fd == -1)
     {
       g_warning ("Failed to acquire file descriptor: %s", error->message);
@@ -1259,9 +1224,10 @@ process_regions (GrdSession       *session,
       if (!mapping_id)
         continue;
 
-      g_debug ("ei: mapping-id: %s, [x, y, w, h] = [%u, %u, %u, %u]", mapping_id,
-               ei_region_get_x (ei_region), ei_region_get_y (ei_region),
-               ei_region_get_width (ei_region), ei_region_get_height (ei_region));
+      g_debug ("ei: New region: mapping-id: %s, %ux%u (%u, %u)",
+               mapping_id,
+               ei_region_get_width (ei_region), ei_region_get_height (ei_region),
+               ei_region_get_x (ei_region), ei_region_get_y (ei_region));
 
       g_assert (ei_region_get_width (ei_region) > 0);
       g_assert (ei_region_get_height (ei_region) > 0);
@@ -1284,7 +1250,10 @@ grd_ei_source_dispatch (gpointer user_data)
 
   while ((event = ei_get_event (priv->ei)))
     {
-      switch (ei_event_get_type (event))
+      enum ei_event_type ei_event_type = ei_event_get_type (event);
+      gboolean handled = TRUE;
+
+      switch (ei_event_type)
         {
         case EI_EVENT_CONNECT:
         case EI_EVENT_DISCONNECT:
@@ -1348,7 +1317,14 @@ grd_ei_source_dispatch (gpointer user_data)
             g_clear_pointer (&priv->ei_keyboard, ei_device_unref);
           break;
         default:
+          handled = FALSE;
           break;
+        }
+
+      if (handled)
+        {
+          g_debug ("ei: Handled event type %s",
+                   ei_event_type_to_string (ei_event_type));
         }
       ei_event_unref (event);
     }
@@ -1550,6 +1526,9 @@ grd_session_start (GrdSession *session)
   priv->cancellable = g_cancellable_new ();
 
   remote_desktop_proxy = grd_context_get_mutter_remote_desktop_proxy (priv->context);
+
+  g_assert (remote_desktop_proxy);
+
   grd_dbus_mutter_remote_desktop_call_create_session (remote_desktop_proxy,
                                                       priv->cancellable,
                                                       on_remote_desktop_session_created,
@@ -1617,6 +1596,7 @@ grd_session_get_property (GObject    *object,
     {
     case PROP_CONTEXT:
       g_value_set_object (value, priv->context);
+      break;
 
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);

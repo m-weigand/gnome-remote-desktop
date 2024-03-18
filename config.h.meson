@@ -6,9 +6,6 @@
 /* The prefix for our gettext translation domains. */
 #mesondefine GETTEXT_PACKAGE
 
-/* Defined if FDK AAC is available */
-#mesondefine HAVE_FDK_AAC
-
 /* Defined if RDP backend enabled */
 #mesondefine HAVE_RDP
 
@@ -17,3 +14,12 @@
 
 /* Path of the data dir */
 #mesondefine GRD_DATA_DIR
+
+/* Path of the system daemon custom settings dir */
+#mesondefine GRD_CUSTOM_CONF
+
+/* Path of the system daemon default settings dir */
+#mesondefine GRD_DEFAULT_CONF
+
+/* Username of system grd daemon */
+#mesondefine GRD_USERNAME

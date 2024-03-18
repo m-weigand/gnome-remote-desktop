@@ -16,8 +16,10 @@ deps = [
   pipewire_dep,
   libei_dep,
   libnotify_dep,
+  libsystemd_dep,
   epoxy_dep,
   drm_dep,
+  xkbcommon_dep,
 
   credentials_deps,
 ]
@@ -29,6 +31,8 @@ credentials_sources = files([
   'grd-credentials-file.h',
   'grd-credentials-libsecret.c',
   'grd-credentials-libsecret.h',
+  'grd-credentials-one-time.c',
+  'grd-credentials-one-time.h',
   'grd-credentials-tpm.c',
   'grd-credentials-tpm.h',
   'grd-tpm.c',
@@ -61,6 +65,10 @@ daemon_sources = files([
   'grd-session.h',
   'grd-settings.c',
   'grd-settings.h',
+  'grd-settings-handover.c',
+  'grd-settings-handover.h',
+  'grd-settings-system.c',
+  'grd-settings-system.h',
   'grd-settings-user.c',
   'grd-settings-user.h',
   'grd-stream.c',
@@ -74,8 +82,16 @@ if have_rdp
   daemon_sources += files([
     'grd-clipboard-rdp.c',
     'grd-clipboard-rdp.h',
+    'grd-daemon-handover.c',
+    'grd-daemon-handover.h',
+    'grd-daemon-system.c',
+    'grd-daemon-system.h',
+    'grd-daemon-utils.c',
+    'grd-daemon-utils.h',
     'grd-hwaccel-nvidia.c',
     'grd-hwaccel-nvidia.h',
+    'grd-rdp-audio-input.c',
+    'grd-rdp-audio-input.h',
     'grd-rdp-audio-output-stream.c',
     'grd-rdp-audio-output-stream.h',
     'grd-rdp-audio-playback.c',
@@ -84,6 +100,10 @@ if have_rdp
     'grd-rdp-buffer.h',
     'grd-rdp-buffer-pool.c',
     'grd-rdp-buffer-pool.h',
+    'grd-rdp-connect-time-autodetection.c',
+    'grd-rdp-connect-time-autodetection.h',
+    'grd-rdp-cursor-renderer.c',
+    'grd-rdp-cursor-renderer.h',
     'grd-rdp-damage-detector.c',
     'grd-rdp-damage-detector.h',
     'grd-rdp-damage-detector-cuda.c',
@@ -118,14 +138,24 @@ if have_rdp
     'grd-rdp-pipewire-stream.c',
     'grd-rdp-pipewire-stream.h',
     'grd-rdp-private.h',
+    'grd-rdp-render-context.c',
+    'grd-rdp-render-context.h',
+    'grd-rdp-renderer.c',
+    'grd-rdp-renderer.h',
+    'grd-rdp-routing-token.c',
+    'grd-rdp-routing-token.h',
     'grd-rdp-sam.c',
     'grd-rdp-sam.h',
     'grd-rdp-server.c',
     'grd-rdp-server.h',
+    'grd-rdp-session-metrics.c',
+    'grd-rdp-session-metrics.h',
     'grd-rdp-stream-owner.c',
     'grd-rdp-stream-owner.h',
     'grd-rdp-surface.c',
     'grd-rdp-surface.h',
+    'grd-rdp-surface-renderer.c',
+    'grd-rdp-surface-renderer.h',
     'grd-rdp-telemetry.c',
     'grd-rdp-telemetry.h',
     'grd-session-rdp.c',
@@ -135,18 +165,14 @@ if have_rdp
   deps += [
     cuda_dep,
     dl_dep,
+    fdk_aac_dep,
     freerdp_dep,
     freerdp_server_dep,
     fuse_dep,
+    opus_dep,
+    polkit_dep,
     winpr_dep,
-    xkbcommon_dep,
   ]
-
-  if (have_fdk_aac)
-    deps += [
-      fdk_aac_dep,
-    ]
-  endif
 endif
 
 if have_vnc
@@ -181,8 +207,27 @@ gen_daemon_sources += gnome.gdbus_codegen('grd-dbus-mutter-remote-desktop',
                                           'org.gnome.Mutter.RemoteDesktop.xml',
                                           interface_prefix: 'org.gnome.Mutter.',
                                           namespace: 'GrdDBusMutter')
+gen_daemon_sources += gnome.gdbus_codegen('grd-dbus-remote-desktop',
+                                          'org.gnome.RemoteDesktop.xml',
+                                          interface_prefix: 'org.gnome.RemoteDesktop.',
+                                          namespace: 'GrdDBusRemoteDesktop')
+if have_rdp
+  gen_daemon_sources += gnome.gdbus_codegen('grd-dbus-gdm',
+                                            'org.gnome.DisplayManager.xml',
+                                            object_manager: true,
+                                            interface_prefix: 'org.gnome.DisplayManager.',
+                                            namespace: 'GrdDBusGdm')
+endif
+
+gen_enum_types = gnome.mkenums('grd-enum-types',
+  h_template: 'grd-enum-types.h.in',
+  c_template: 'grd-enum-types.c.in',
+  sources: 'grd-enums.h',
+)
 
 daemon_sources += gen_daemon_sources
+
+daemon_sources += gen_enum_types
 
 control_sources = ([
   'grd-control.c'
@@ -192,8 +237,27 @@ ctl_sources = ([
   'grd-ctl.c',
   'grd-debug.c',
   'grd-debug.h',
+  'grd-settings.c',
+  'grd-settings.h',
+  'grd-settings-system.c',
+  'grd-settings-system.h',
+  'grd-settings-user.c',
+  'grd-settings-user.h',
   credentials_sources,
+  gen_enum_types,
 ])
+
+ctl_deps = [
+  glib_dep,
+  gio_dep,
+  credentials_deps,
+]
+
+if have_rdp
+  ctl_deps += [
+    freerdp_dep,
+  ]
+endif
 
 executable('gnome-remote-desktop-daemon',
            daemon_sources,
@@ -210,21 +274,9 @@ executable('gnome-remote-desktop-control',
 
 executable('grdctl',
            ctl_sources,
-           dependencies: [
-             glib_dep,
-             gio_dep,
-             credentials_deps,
-           ],
+           dependencies: ctl_deps,
            include_directories: [configinc],
            install: true)
-
-service_config = configuration_data()
-service_config.set('libexecdir', libexecdir)
-
-configure_file(input: 'gnome-remote-desktop.service.in',
-               output: 'gnome-remote-desktop.service',
-               configuration: service_config,
-               install_dir: servicedir)
 
 generated_enums_schema = custom_target('gsettings-enums',
               input: 'grd-enums.h',

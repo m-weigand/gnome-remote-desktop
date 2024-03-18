@@ -55,4 +55,18 @@ GSource * grd_create_fd_source (int             fd,
                                 gpointer        user_data,
                                 GDestroyNotify  notify);
 
+gboolean grd_bind_socket (GSocketListener  *server,
+                          uint16_t          port,
+                          uint16_t         *selected_port,
+                          gboolean          port_negotiation_enabled,
+                          GError          **error);
+
+void grd_rewrite_path_to_user_data_dir (char       **path,
+                                        const char  *subdir,
+                                        const char  *fallback_path);
+
+gboolean grd_write_fd_to_file (int            fd,
+                               const char    *filename,
+                               GCancellable  *cancellable,
+                               GError       **error);
 #endif /* GRD_UTILS_H */
