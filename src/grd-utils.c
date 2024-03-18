@@ -24,6 +24,15 @@
 
 #include "grd-utils.h"
 
+#include <gio/gunixfdlist.h>
+#include <gio/gunixinputstream.h>
+#include <glib/gstdio.h>
+
+#include "grd-rdp-server.h"
+#include "grd-vnc-server.h"
+
+#define GRD_SERVER_PORT_RANGE 10
+
 typedef struct _GrdFdSource
 {
   GSource source;
@@ -149,4 +158,134 @@ grd_create_fd_source (int             fd,
   g_source_add_poll (source, &fd_source->poll_fd);
 
   return source;
+}
+
+gboolean
+grd_bind_socket (GSocketListener  *server,
+                 uint16_t          port,
+                 uint16_t         *selected_port,
+                 gboolean          negotiate_port,
+                 GError          **error)
+{
+  g_autofree char *message_tag = NULL;
+  gboolean is_bound = FALSE;
+  int i;
+
+#ifdef HAVE_RDP
+  if (GRD_IS_RDP_SERVER (server))
+    message_tag = g_strdup ("[RDP]");
+  else
+#endif
+#ifdef HAVE_VNC
+  if (GRD_IS_VNC_SERVER (server))
+    message_tag = g_strdup ("[VNC]");
+  else
+#endif
+    g_assert_not_reached ();
+
+  if (!negotiate_port)
+    {
+      is_bound = g_socket_listener_add_inet_port (server,
+                                                  port,
+                                                  NULL,
+                                                  error);
+      goto out;
+    }
+
+  for (i = 0; i < GRD_SERVER_PORT_RANGE; i++, port++)
+    {
+      g_autoptr (GError) local_error = NULL;
+
+      g_assert (port < G_MAXUINT16);
+
+      is_bound = g_socket_listener_add_inet_port (server,
+                                                  port,
+                                                  NULL,
+                                                  &local_error);
+      if (local_error)
+        {
+          g_debug ("%s Server could not be bound to TCP port %hu: %s",
+                   message_tag, port, local_error->message);
+        }
+
+      if (is_bound)
+        break;
+    }
+
+  if (!is_bound)
+    port = g_socket_listener_add_any_inet_port (server, NULL, error);
+
+  is_bound = port != 0;
+
+out:
+  if (is_bound)
+    {
+      g_debug ("%s Server bound to TCP port %hu", message_tag, port);
+      *selected_port = port;
+    }
+
+  return is_bound;
+}
+
+void
+grd_rewrite_path_to_user_data_dir (char       **path,
+                                   const char  *subdir,
+                                   const char  *fallback_path)
+{
+  const char *input_path = NULL;
+  g_autofree char *basename = NULL;
+  g_autofree char *output_path = NULL;
+
+  g_assert (path);
+  g_assert (subdir);
+  g_assert (fallback_path);
+  g_assert (strstr (subdir, "..") == NULL);
+
+  input_path = *path;
+
+  if (!input_path ||
+      input_path[0] == '\0' ||
+      G_IS_DIR_SEPARATOR (input_path[strlen (input_path) - 1]))
+    input_path = fallback_path;
+
+  basename = g_path_get_basename (input_path);
+
+  g_assert (!G_IS_DIR_SEPARATOR (basename[0]));
+
+  output_path =  g_build_filename (g_get_user_data_dir (),
+                                   "gnome-remote-desktop",
+                                   subdir,
+                                   basename,
+                                   NULL);
+
+  g_free (*path);
+  *path = g_steal_pointer (&output_path);
+}
+
+gboolean
+grd_write_fd_to_file (int            fd,
+                      const char    *filename,
+                      GCancellable  *cancellable,
+                      GError       **error)
+{
+  g_autoptr (GInputStream) input_stream = NULL;
+  g_autoptr (GFileOutputStream) output_stream = NULL;
+  g_autoptr (GFile) file = NULL;
+  g_autofree char *dir = g_path_get_dirname (filename);
+
+  g_mkdir_with_parents (dir, 0755);
+
+  input_stream = G_INPUT_STREAM (g_unix_input_stream_new (fd, FALSE));
+
+  file = g_file_new_for_path (filename);
+  output_stream = g_file_replace (file, NULL, TRUE, G_FILE_CREATE_PRIVATE,
+                                  NULL, error);
+  if (!output_stream)
+    return FALSE;
+
+  return g_output_stream_splice (G_OUTPUT_STREAM(output_stream), input_stream,
+                                 G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE |
+                                 G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET,
+                                 cancellable,
+                                 error);
 }

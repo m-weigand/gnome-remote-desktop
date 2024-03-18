@@ -24,10 +24,9 @@
 
 #include "grd-context.h"
 
-#include "grd-credentials-file.h"
-#include "grd-credentials-libsecret.h"
-#include "grd-credentials-tpm.h"
 #include "grd-egl-thread.h"
+#include "grd-settings-handover.h"
+#include "grd-settings-system.h"
 #include "grd-settings-user.h"
 
 #include "grd-dbus-mutter-remote-desktop.h"
@@ -42,10 +41,12 @@ struct _GrdContext
 
   GrdEglThread *egl_thread;
 
-  GrdCredentials *credentials;
   GrdSettings *settings;
 
   GrdRuntimeMode runtime_mode;
+
+  GrdDBusRemoteDesktopRdpServer *rdp_server_iface;
+  GrdDBusRemoteDesktopVncServer *vnc_server_iface;
 };
 
 G_DEFINE_TYPE (GrdContext, grd_context, G_TYPE_OBJECT)
@@ -60,6 +61,18 @@ GrdDBusMutterScreenCast *
 grd_context_get_mutter_screen_cast_proxy (GrdContext *context)
 {
   return context->mutter_screen_cast_proxy;
+}
+
+GrdDBusRemoteDesktopRdpServer *
+grd_context_get_rdp_server_interface (GrdContext *context)
+{
+  return context->rdp_server_iface;
+}
+
+GrdDBusRemoteDesktopVncServer *
+grd_context_get_vnc_server_interface (GrdContext *context)
+{
+  return context->vnc_server_iface;
 }
 
 void
@@ -78,16 +91,28 @@ grd_context_set_mutter_screen_cast_proxy (GrdContext              *context,
   context->mutter_screen_cast_proxy = proxy;
 }
 
+void
+grd_context_set_rdp_server_interface (
+  GrdContext                    *context,
+  GrdDBusRemoteDesktopRdpServer *rdp_server_iface)
+{
+  g_clear_object (&context->rdp_server_iface);
+  context->rdp_server_iface = rdp_server_iface;
+}
+
+void
+grd_context_set_vnc_server_interface (
+  GrdContext                    *context,
+  GrdDBusRemoteDesktopVncServer *vnc_server_iface)
+{
+  g_clear_object (&context->vnc_server_iface);
+  context->vnc_server_iface = vnc_server_iface;
+}
+
 GrdSettings *
 grd_context_get_settings (GrdContext *context)
 {
   return context->settings;
-}
-
-GrdCredentials *
-grd_context_get_credentials (GrdContext *context)
-{
-  return context->credentials;
 }
 
 GrdEglThread *
@@ -107,7 +132,8 @@ grd_context_notify_daemon_ready (GrdContext *context)
 {
   g_autoptr (GError) error = NULL;
 
-  if (context->egl_thread)
+  if (context->egl_thread ||
+      context->runtime_mode == GRD_RUNTIME_MODE_SYSTEM)
     return;
 
   context->egl_thread = grd_egl_thread_new (&error);
@@ -120,32 +146,26 @@ grd_context_new (GrdRuntimeMode   runtime_mode,
                  GError         **error)
 {
   g_autoptr (GrdContext) context = NULL;
-  g_autoptr (GError) local_error = NULL;
 
   context = g_object_new (GRD_TYPE_CONTEXT, NULL);
   context->runtime_mode = runtime_mode;
 
   switch (runtime_mode)
     {
-    case GRD_RUNTIME_MODE_HEADLESS:
-      context->credentials = GRD_CREDENTIALS (grd_credentials_tpm_new (&local_error));
-      if (!context->credentials)
-        {
-          g_warning ("Init TPM credentials failed because %s, using GKeyFile as fallback",
-                     local_error->message);
-          context->credentials =
-            GRD_CREDENTIALS (grd_credentials_file_new (error));
-        }
-      break;
     case GRD_RUNTIME_MODE_SCREEN_SHARE:
-      context->credentials = GRD_CREDENTIALS (grd_credentials_libsecret_new ());
+    case GRD_RUNTIME_MODE_HEADLESS:
+      context->settings = GRD_SETTINGS (grd_settings_user_new (runtime_mode));
+      break;
+    case GRD_RUNTIME_MODE_SYSTEM:
+      context->settings = GRD_SETTINGS (grd_settings_system_new ());
+      break;
+    case GRD_RUNTIME_MODE_HANDOVER:
+      context->settings = GRD_SETTINGS (grd_settings_handover_new ());
       break;
     }
 
-  if (!context->credentials)
+  if (!context->settings)
     return NULL;
-
-  context->settings = GRD_SETTINGS (grd_settings_user_new (context));
 
   return g_steal_pointer (&context);
 }
@@ -159,7 +179,6 @@ grd_context_finalize (GObject *object)
   g_clear_object (&context->mutter_screen_cast_proxy);
   g_clear_pointer (&context->egl_thread, grd_egl_thread_free);
   g_clear_object (&context->settings);
-  g_clear_object (&context->credentials);
 
   G_OBJECT_CLASS (grd_context_parent_class)->finalize (object);
 }

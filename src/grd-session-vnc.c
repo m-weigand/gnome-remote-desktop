@@ -25,6 +25,7 @@
 #include "grd-session-vnc.h"
 
 #include <gio/gio.h>
+#include <glib/gi18n.h>
 #include <linux/input.h>
 #include <rfb/rfb.h>
 
@@ -71,6 +72,7 @@ struct _GrdSessionVnc
 
   GrdClipboardVnc *clipboard_vnc;
   GrdVncScreenShareMode screen_share_mode;
+  gboolean is_view_only;
   GrdVncMonitorConfig *monitor_config;
 };
 
@@ -281,12 +283,37 @@ prompt_response_callback (GObject      *source_object,
       grd_session_start (GRD_SESSION (session_vnc));
       rfbStartOnHoldClient (session_vnc->rfb_client);
       return;
-    case GRD_PROMPT_RESPONSE_REFUSE:
+    case GRD_PROMPT_RESPONSE_CANCEL:
       rfbRefuseOnHoldClient (session_vnc->rfb_client);
       return;
     }
 
   g_assert_not_reached ();
+}
+
+static void
+show_sharing_desktop_prompt (GrdSessionVnc *session_vnc,
+                             const char    *host)
+{
+  g_autoptr (GrdPromptDefinition) prompt_definition = NULL;
+
+  session_vnc->prompt = g_object_new (GRD_TYPE_PROMPT, NULL);
+  session_vnc->prompt_cancellable = g_cancellable_new ();
+
+  prompt_definition = g_new0 (GrdPromptDefinition, 1);
+  prompt_definition->summary =
+    g_strdup_printf (_("Do you want to share your desktop?"));
+  prompt_definition->body =
+    g_strdup_printf (_("A user on the computer '%s' is trying to remotely "
+                       "view or control your desktop."), host);
+  prompt_definition->cancel_label = g_strdup_printf (_("Refuse"));
+  prompt_definition->accept_label = g_strdup_printf (_("Accept"));
+
+  grd_prompt_query_async (session_vnc->prompt,
+                          prompt_definition,
+                          session_vnc->prompt_cancellable,
+                          prompt_response_callback,
+                          session_vnc);
 }
 
 static enum rfbNewClientAction
@@ -298,7 +325,9 @@ handle_new_client (rfbClientPtr rfb_client)
 
   g_debug ("New VNC client");
 
-  session_vnc->auth_method = grd_settings_get_vnc_auth_method (settings);
+  g_object_get (G_OBJECT (settings),
+                "vnc-auth-method", &session_vnc->auth_method,
+                NULL);
 
   session_vnc->rfb_client = rfb_client;
   rfb_client->clientGoneHook = handle_client_gone;
@@ -306,13 +335,7 @@ handle_new_client (rfbClientPtr rfb_client)
   switch (session_vnc->auth_method)
     {
     case GRD_VNC_AUTH_METHOD_PROMPT:
-      session_vnc->prompt = g_object_new (GRD_TYPE_PROMPT, NULL);
-      session_vnc->prompt_cancellable = g_cancellable_new ();
-      grd_prompt_query_async (session_vnc->prompt,
-                              rfb_client->host,
-                              session_vnc->prompt_cancellable,
-                              prompt_response_callback,
-                              session_vnc);
+      show_sharing_desktop_prompt (session_vnc, rfb_client->host);
       grd_session_vnc_detach_source (session_vnc);
       return RFB_CLIENT_ON_HOLD;
     case GRD_VNC_AUTH_METHOD_PASSWORD:
@@ -329,15 +352,6 @@ handle_new_client (rfbClientPtr rfb_client)
   g_assert_not_reached ();
 }
 
-static gboolean
-is_view_only (GrdSessionVnc *session_vnc)
-{
-  GrdContext *context = grd_session_get_context (GRD_SESSION (session_vnc));
-  GrdSettings *settings = grd_context_get_settings (context);
-
-  return grd_settings_get_vnc_view_only (settings);
-}
-
 static void
 handle_key_event (rfbBool      down,
                   rfbKeySym    keysym,
@@ -346,7 +360,7 @@ handle_key_event (rfbBool      down,
   GrdSessionVnc *session_vnc = GRD_SESSION_VNC (rfb_client->screen->screenData);
   GrdSession *session = GRD_SESSION (session_vnc);
 
-  if (is_view_only (session_vnc))
+  if (session_vnc->is_view_only)
     return;
 
   if (down)
@@ -450,7 +464,7 @@ handle_pointer_event (int          button_mask,
   GrdSessionVnc *session_vnc = rfb_client->screen->screenData;
   GrdSession *session = GRD_SESSION (session_vnc);
 
-  if (is_view_only (session_vnc))
+  if (session_vnc->is_view_only)
     return;
 
   if (session_vnc->stream &&
@@ -743,6 +757,16 @@ grd_session_vnc_detach_source (GrdSessionVnc *session_vnc)
   g_clear_pointer (&session_vnc->source, g_source_unref);
 }
 
+static void
+on_view_only_changed (GrdSettings   *settings,
+                      GParamSpec    *pspec,
+                      GrdSessionVnc *session_vnc)
+{
+  g_object_get (G_OBJECT (settings),
+                "vnc-view-only", &session_vnc->is_view_only,
+                NULL);
+}
+
 GrdSessionVnc *
 grd_session_vnc_new (GrdVncServer      *vnc_server,
                      GSocketConnection *connection)
@@ -759,7 +783,14 @@ grd_session_vnc_new (GrdVncServer      *vnc_server,
   session_vnc->connection = g_object_ref (connection);
 
   settings = grd_context_get_settings (context);
-  session_vnc->screen_share_mode = grd_settings_get_vnc_screen_share_mode (settings);
+  g_object_get (G_OBJECT (settings),
+                "vnc-screen-share-mode", &session_vnc->screen_share_mode,
+                "vnc-view-only", &session_vnc->is_view_only,
+                NULL);
+
+  g_signal_connect (settings, "notify::vnc-view-only",
+                    G_CALLBACK (on_view_only_changed),
+                    session_vnc);
 
   grd_session_vnc_attach_source (session_vnc);
 
@@ -801,6 +832,12 @@ grd_session_vnc_stop (GrdSession *session)
   g_clear_pointer (&session_vnc->rfb_screen->frameBuffer, g_free);
   g_clear_pointer (&session_vnc->rfb_screen, rfbScreenCleanup);
   g_clear_pointer (&session_vnc->monitor_config, grd_vnc_monitor_config_free);
+  if (session_vnc->prompt_cancellable)
+    {
+      g_cancellable_cancel (session_vnc->prompt_cancellable);
+      g_clear_object (&session_vnc->prompt_cancellable);
+    }
+  g_clear_object (&session_vnc->prompt);
 
   g_clear_handle_id (&session_vnc->close_session_idle_id, g_source_remove);
 }

@@ -29,13 +29,15 @@
 
 #define PROTOCOL_TIMEOUT_MS (10 * 1000)
 
-#define RAW_DATA_BUFFER_SIZE 4096
-#define MAX_IDLING_TIME_US (5 * G_USEC_PER_SEC)
+#define PCM_FRAMES_PER_PACKET 1024
+#define MAX_IDLING_TIME_US_DEFAULT (5 * G_USEC_PER_SEC)
+#define MAX_IDLING_TIME_US_OPUS (10 * G_USEC_PER_SEC)
 #define MAX_LOCAL_FRAMES_LIFETIME_US (50 * 1000)
 #define MAX_RENDER_LATENCY_MS 300
 
 #define N_CHANNELS 2
-#define N_SAMPLES_PER_SEC 44100
+#define N_SAMPLES_PER_SEC_DEFAULT 44100
+#define N_SAMPLES_PER_SEC_OPUS 48000
 #define N_BYTES_PER_SAMPLE_PCM sizeof (int16_t)
 #define N_BLOCK_ALIGN_PCM (N_CHANNELS * N_BYTES_PER_SAMPLE_PCM)
 
@@ -82,13 +84,18 @@ struct _GrdRdpAudioPlayback
   gboolean protocol_stopped;
 
   int32_t aac_client_format_idx;
+  int32_t opus_client_format_idx;
   int32_t pcm_client_format_idx;
+  int32_t client_format_idx;
+  uint32_t n_samples_per_sec;
+  GrdRdpDspCodec codec;
 
   GThread *encode_thread;
   GMainContext *encode_context;
   GSource *encode_source;
 
   GrdRdpDsp *rdp_dsp;
+  uint32_t sample_buffer_size;
 
   GMutex block_mutex;
   BlockInfo block_infos[256];
@@ -321,13 +328,19 @@ static gboolean
 is_locked_stream_idling_too_long (GrdRdpAudioPlayback *audio_playback)
 {
   int64_t first_empty_audio_data_us = audio_playback->first_empty_audio_data_us;
+  int64_t max_idling_time_us;
   int64_t current_time_us;
 
   if (!audio_playback->has_empty_audio_timestamp)
     return FALSE;
 
+  if (audio_playback->codec == GRD_RDP_DSP_CODEC_OPUS)
+    max_idling_time_us = MAX_IDLING_TIME_US_OPUS;
+  else
+    max_idling_time_us = MAX_IDLING_TIME_US_DEFAULT;
+
   current_time_us = g_get_monotonic_time ();
-  if (current_time_us - first_empty_audio_data_us > MAX_IDLING_TIME_US)
+  if (current_time_us - first_empty_audio_data_us > max_idling_time_us)
     return TRUE;
 
   return FALSE;
@@ -405,7 +418,7 @@ grd_rdp_audio_playback_maybe_submit_samples (GrdRdpAudioPlayback   *audio_playba
   pending_size = get_pending_audio_data_size (audio_playback);
 
   if (!data_is_empty ||
-      (pending_size > 0 && pending_size < RAW_DATA_BUFFER_SIZE))
+      (pending_size > 0 && pending_size < audio_playback->sample_buffer_size))
     {
       AudioData *audio_data;
 
@@ -416,7 +429,7 @@ grd_rdp_audio_playback_maybe_submit_samples (GrdRdpAudioPlayback   *audio_playba
 
       g_queue_push_tail (audio_playback->pending_frames, audio_data);
 
-      if (pending_size + size >= RAW_DATA_BUFFER_SIZE)
+      if (pending_size + size >= audio_playback->sample_buffer_size)
         pending_encode = TRUE;
     }
   g_mutex_unlock (&audio_playback->pending_frames_mutex);
@@ -497,7 +510,18 @@ static const AUDIO_FORMAT audio_format_aac =
 {
   .wFormatTag = WAVE_FORMAT_AAC_MS,
   .nChannels = N_CHANNELS,
-  .nSamplesPerSec = N_SAMPLES_PER_SEC,
+  .nSamplesPerSec = N_SAMPLES_PER_SEC_DEFAULT,
+  .nAvgBytesPerSec = 12000,
+  .nBlockAlign = 4,
+  .wBitsPerSample = 16,
+  .cbSize = 0,
+};
+
+static const AUDIO_FORMAT audio_format_opus =
+{
+  .wFormatTag = WAVE_FORMAT_OPUS,
+  .nChannels = N_CHANNELS,
+  .nSamplesPerSec = N_SAMPLES_PER_SEC_OPUS,
   .nAvgBytesPerSec = 12000,
   .nBlockAlign = 4,
   .wBitsPerSample = 16,
@@ -508,8 +532,8 @@ static const AUDIO_FORMAT audio_format_pcm =
 {
   .wFormatTag = WAVE_FORMAT_PCM,
   .nChannels = N_CHANNELS,
-  .nSamplesPerSec = N_SAMPLES_PER_SEC,
-  .nAvgBytesPerSec = N_SAMPLES_PER_SEC * N_BLOCK_ALIGN_PCM,
+  .nSamplesPerSec = N_SAMPLES_PER_SEC_DEFAULT,
+  .nAvgBytesPerSec = N_SAMPLES_PER_SEC_DEFAULT * N_BLOCK_ALIGN_PCM,
   .nBlockAlign = N_BLOCK_ALIGN_PCM,
   .wBitsPerSample = N_BYTES_PER_SAMPLE_PCM * 8,
   .cbSize = 0,
@@ -517,11 +541,75 @@ static const AUDIO_FORMAT audio_format_pcm =
 
 static AUDIO_FORMAT server_formats[] =
 {
-#ifdef HAVE_FDK_AAC
   audio_format_aac,
-#endif /* HAVE_FDK_AAC */
+  audio_format_opus,
   audio_format_pcm,
 };
+
+static uint32_t
+get_sample_rate (GrdRdpAudioPlayback *audio_playback)
+{
+  switch (audio_playback->codec)
+    {
+    case GRD_RDP_DSP_CODEC_NONE:
+    case GRD_RDP_DSP_CODEC_AAC:
+    case GRD_RDP_DSP_CODEC_ALAW:
+      return N_SAMPLES_PER_SEC_DEFAULT;
+    case GRD_RDP_DSP_CODEC_OPUS:
+      return N_SAMPLES_PER_SEC_OPUS;
+    }
+
+  g_assert_not_reached ();
+}
+
+static void
+prepare_client_format (GrdRdpAudioPlayback *audio_playback)
+{
+  uint32_t frames_per_packet;
+
+  if (audio_playback->aac_client_format_idx >= 0)
+    {
+      audio_playback->client_format_idx = audio_playback->aac_client_format_idx;
+      audio_playback->codec = GRD_RDP_DSP_CODEC_AAC;
+    }
+  else if (audio_playback->opus_client_format_idx >= 0)
+    {
+      audio_playback->client_format_idx = audio_playback->opus_client_format_idx;
+      audio_playback->codec = GRD_RDP_DSP_CODEC_OPUS;
+    }
+  else if (audio_playback->pcm_client_format_idx >= 0)
+    {
+      audio_playback->client_format_idx = audio_playback->pcm_client_format_idx;
+      audio_playback->codec = GRD_RDP_DSP_CODEC_NONE;
+    }
+  else
+    {
+      g_assert_not_reached ();
+    }
+
+  audio_playback->n_samples_per_sec = get_sample_rate (audio_playback);
+
+  switch (audio_playback->codec)
+    {
+    case GRD_RDP_DSP_CODEC_NONE:
+      frames_per_packet = PCM_FRAMES_PER_PACKET;
+      break;
+    case GRD_RDP_DSP_CODEC_AAC:
+    case GRD_RDP_DSP_CODEC_ALAW:
+    case GRD_RDP_DSP_CODEC_OPUS:
+      frames_per_packet =
+        grd_rdp_dsp_get_frames_per_packet (audio_playback->rdp_dsp,
+                                           audio_playback->codec);
+      break;
+    }
+  g_assert (frames_per_packet > 0);
+
+  audio_playback->sample_buffer_size = N_BLOCK_ALIGN_PCM * frames_per_packet;
+
+  g_debug ("[RDP.AUDIO_PLAYBACK] Using codec %s with sample buffer size %u",
+           grd_rdp_dsp_codec_to_string (audio_playback->codec),
+           audio_playback->sample_buffer_size);
+}
 
 static void
 rdpsnd_activated (RdpsndServerContext *rdpsnd_context)
@@ -551,17 +639,19 @@ rdpsnd_activated (RdpsndServerContext *rdpsnd_context)
     {
       AUDIO_FORMAT *audio_format = &rdpsnd_context->client_formats[i];
 
-#ifdef HAVE_FDK_AAC
       if (audio_playback->aac_client_format_idx < 0 &&
           are_audio_formats_equal (audio_format, &audio_format_aac))
         audio_playback->aac_client_format_idx = i;
-#endif /* HAVE_FDK_AAC */
+      if (audio_playback->opus_client_format_idx < 0 &&
+          are_audio_formats_equal (audio_format, &audio_format_opus))
+        audio_playback->opus_client_format_idx = i;
       if (audio_playback->pcm_client_format_idx < 0 &&
           are_audio_formats_equal (audio_format, &audio_format_pcm))
         audio_playback->pcm_client_format_idx = i;
     }
 
   if (audio_playback->aac_client_format_idx < 0 &&
+      audio_playback->opus_client_format_idx < 0 &&
       audio_playback->pcm_client_format_idx < 0)
     {
       g_warning ("[RDP.AUDIO_PLAYBACK] Audio Format negotiation with client "
@@ -569,12 +659,14 @@ rdpsnd_activated (RdpsndServerContext *rdpsnd_context)
       g_source_set_ready_time (audio_playback->channel_teardown_source, 0);
       return;
     }
+  audio_playback->pending_client_formats = FALSE;
 
-  g_message ("[RDP.AUDIO_PLAYBACK] Client Formats: [AAC: %s, PCM: %s]",
+  g_message ("[RDP.AUDIO_PLAYBACK] Client Formats: [AAC: %s, Opus: %s, PCM: %s]",
              audio_playback->aac_client_format_idx >= 0 ? "true" : "false",
+             audio_playback->opus_client_format_idx >= 0 ? "true" : "false",
              audio_playback->pcm_client_format_idx >= 0 ? "true" : "false");
 
-  audio_playback->pending_client_formats = FALSE;
+  prepare_client_format (audio_playback);
 
   rdpsnd_context->Training (rdpsnd_context, TRAINING_TIMESTAMP,
                             TRAINING_PACKSIZE, training_data);
@@ -587,10 +679,12 @@ rdpsnd_training_confirm (RdpsndServerContext *rdpsnd_context,
 {
   GrdRdpAudioPlayback *audio_playback = rdpsnd_context->data;
 
-  if (!audio_playback->pending_training_confirm)
+  if (audio_playback->pending_client_formats ||
+      !audio_playback->pending_training_confirm)
     {
-      g_warning ("[RDP.AUDIO_PLAYBACK] Received stray Training Confirm PDU. "
-                 "Ignoring...");
+      g_warning ("[RDP.AUDIO_PLAYBACK] Protocol violation: Received unexpected "
+                 "Training Confirm PDU. Terminating protocol");
+      g_source_set_ready_time (audio_playback->channel_teardown_source, 0);
       return CHANNEL_RC_OK;
     }
 
@@ -664,6 +758,7 @@ grd_rdp_audio_playback_new (GrdSessionRdp *session_rdp,
 {
   g_autoptr (GrdRdpAudioPlayback) audio_playback = NULL;
   RdpsndServerContext *rdpsnd_context;
+  GrdRdpDspDescriptor dsp_descriptor = {};
   g_autoptr (GError) error = NULL;
 
   audio_playback = g_object_new (GRD_TYPE_RDP_AUDIO_PLAYBACK, NULL);
@@ -688,9 +783,14 @@ grd_rdp_audio_playback_new (GrdSessionRdp *session_rdp,
 
   pw_init (NULL, NULL);
 
-  audio_playback->rdp_dsp = grd_rdp_dsp_new (N_SAMPLES_PER_SEC, N_CHANNELS,
-                                             audio_format_aac.nAvgBytesPerSec * 8,
-                                             &error);
+  dsp_descriptor.create_flags = GRD_RDP_DSP_CREATE_FLAG_ENCODER;
+  dsp_descriptor.n_samples_per_sec_aac = N_SAMPLES_PER_SEC_DEFAULT;
+  dsp_descriptor.n_samples_per_sec_opus = N_SAMPLES_PER_SEC_OPUS;
+  dsp_descriptor.n_channels = N_CHANNELS;
+  dsp_descriptor.bitrate_aac = audio_format_aac.nAvgBytesPerSec * 8;
+  dsp_descriptor.bitrate_opus = audio_format_opus.nAvgBytesPerSec * 8;
+
+  audio_playback->rdp_dsp = grd_rdp_dsp_new (&dsp_descriptor, &error);
   if (!audio_playback->rdp_dsp)
     {
       g_warning ("[RDP.AUDIO_PLAYBACK] Failed to create DSP instance: %s",
@@ -968,28 +1068,29 @@ maybe_send_frames (GrdRdpAudioPlayback         *audio_playback,
                    const GrdRdpAudioVolumeData *volume_data)
 {
   RdpsndServerContext *rdpsnd_context = audio_playback->rdpsnd_context;
+  int32_t client_format_idx = audio_playback->client_format_idx;
+  GrdRdpDspCodec codec = audio_playback->codec;
   g_autofree uint8_t *raw_data = NULL;
   uint32_t raw_data_size = 0;
   uint32_t copied_data = 0;
   g_autofree uint8_t *out_data = NULL;
   uint32_t out_size = 0;
-  GrdRdpDspCodec codec;
-  int32_t client_format_idx;
-  gboolean success;
+  gboolean success = FALSE;
   BlockInfo *block_info;
 
   g_assert (N_BLOCK_ALIGN_PCM > 0);
-  g_assert (RAW_DATA_BUFFER_SIZE % N_BLOCK_ALIGN_PCM == 0);
+  g_assert (audio_playback->sample_buffer_size > 0);
+  g_assert (audio_playback->sample_buffer_size % N_BLOCK_ALIGN_PCM == 0);
   g_assert (!audio_playback->pending_training_confirm);
 
   raw_data_size = get_pending_audio_data_size (audio_playback);
-  if (raw_data_size < RAW_DATA_BUFFER_SIZE)
+  if (raw_data_size < audio_playback->sample_buffer_size)
     return;
 
   g_assert (raw_data_size > 0);
-  raw_data = g_malloc0 (RAW_DATA_BUFFER_SIZE);
+  raw_data = g_malloc0 (audio_playback->sample_buffer_size);
 
-  while (copied_data < RAW_DATA_BUFFER_SIZE)
+  while (copied_data < audio_playback->sample_buffer_size)
     {
       AudioData *audio_data;
       uint32_t sample_size;
@@ -1005,13 +1106,13 @@ maybe_send_frames (GrdRdpAudioPlayback         *audio_playback,
 
       g_assert (audio_data->size >= N_BLOCK_ALIGN_PCM);
 
-      if (copied_data + audio_data->size > RAW_DATA_BUFFER_SIZE)
+      if (copied_data + audio_data->size > audio_playback->sample_buffer_size)
         {
           AudioData *remaining_audio_data;
           uint32_t processed_size;
           uint32_t remaining_size;
 
-          processed_size = RAW_DATA_BUFFER_SIZE - copied_data;
+          processed_size = audio_playback->sample_buffer_size - copied_data;
           g_assert (processed_size % N_BLOCK_ALIGN_PCM == 0);
 
           frames_taken = processed_size / sample_size;
@@ -1041,19 +1142,6 @@ maybe_send_frames (GrdRdpAudioPlayback         *audio_playback,
       audio_data_free (audio_data);
     }
 
-#ifdef HAVE_FDK_AAC
-  if (audio_playback->aac_client_format_idx >= 0)
-    {
-      client_format_idx = audio_playback->aac_client_format_idx;
-      codec = GRD_RDP_DSP_CODEC_AAC;
-    }
-  else
-#endif /* HAVE_FDK_AAC */
-    {
-      client_format_idx = audio_playback->pcm_client_format_idx;
-      codec = GRD_RDP_DSP_CODEC_NONE;
-    }
-
   switch (codec)
     {
     case GRD_RDP_DSP_CODEC_NONE:
@@ -1062,6 +1150,8 @@ maybe_send_frames (GrdRdpAudioPlayback         *audio_playback,
       success = TRUE;
       break;
     case GRD_RDP_DSP_CODEC_AAC:
+    case GRD_RDP_DSP_CODEC_ALAW:
+    case GRD_RDP_DSP_CODEC_OPUS:
       success = grd_rdp_dsp_encode (audio_playback->rdp_dsp, codec,
                                     (int16_t *) raw_data, copied_data,
                                     sizeof (int16_t), &out_data, &out_size);
@@ -1163,6 +1253,7 @@ registry_event_global (void                  *user_data,
   const struct spa_dict_item *item;
   gboolean found_audio_sink = FALSE;
   uint32_t position[SPA_AUDIO_MAX_CHANNELS] = {};
+  g_autofree char *node_name = NULL;
   g_autoptr (GError) error = NULL;
 
   if (strcmp (type, PW_TYPE_INTERFACE_Node) != 0)
@@ -1170,17 +1261,21 @@ registry_event_global (void                  *user_data,
 
   spa_dict_for_each (item, props)
     {
+      if (strcmp (item->key, "node.name") == 0)
+        {
+          g_clear_pointer (&node_name, g_free);
+          node_name = g_strdup (item->value);
+        }
       if (strcmp (item->key, "media.class") == 0 &&
           strcmp (item->value, "Audio/Sink") == 0)
-        {
-          g_debug ("[RDP.AUDIO_PLAYBACK] Found audio sink: id: %u, type: %s/%u",
-                   id, type, version);
-          found_audio_sink = TRUE;
-        }
+        found_audio_sink = TRUE;
     }
 
   if (!found_audio_sink)
     return;
+
+  g_debug ("[RDP.AUDIO_PLAYBACK] Found audio sink: id: %u, type: %s/%u, "
+           "name: %s", id, type, version, node_name);
 
   locker = g_mutex_locker_new (&audio_playback->streams_mutex);
   if (g_hash_table_contains (audio_playback->audio_streams,
@@ -1197,7 +1292,7 @@ registry_event_global (void                  *user_data,
     grd_rdp_audio_output_stream_new (audio_playback,
                                      audio_playback->pipewire_core,
                                      audio_playback->pipewire_registry,
-                                     id, N_SAMPLES_PER_SEC,
+                                     id, audio_playback->n_samples_per_sec,
                                      N_CHANNELS, position, &error);
   if (!audio_output_stream)
     {
@@ -1338,6 +1433,7 @@ grd_rdp_audio_playback_init (GrdRdpAudioPlayback *audio_playback)
   audio_playback->pending_training_confirm = TRUE;
 
   audio_playback->aac_client_format_idx = -1;
+  audio_playback->opus_client_format_idx = -1;
   audio_playback->pcm_client_format_idx = -1;
 
   audio_playback->audio_streams = g_hash_table_new_full (NULL, NULL,

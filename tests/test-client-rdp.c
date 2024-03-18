@@ -110,16 +110,16 @@ uninit_graphics_pipeline (RdpPeerContext      *rdp_peer_context,
 }
 
 static void
-on_channel_connected (void                      *user_data,
-                      ChannelConnectedEventArgs *event_args)
+on_channel_connected (void                            *user_data,
+                      const ChannelConnectedEventArgs *event_args)
 {
   if (strcmp (event_args->name, RDPGFX_DVC_CHANNEL_NAME) == 0)
     init_graphics_pipeline (user_data, event_args->pInterface);
 }
 
 static void
-on_channel_disconnected (void                         *user_data,
-                         ChannelDisconnectedEventArgs *event_args)
+on_channel_disconnected (void                               *user_data,
+                         const ChannelDisconnectedEventArgs *event_args)
 {
   if (strcmp (event_args->name, RDPGFX_DVC_CHANNEL_NAME) == 0)
     uninit_graphics_pipeline (user_data, event_args->pInterface);
@@ -132,24 +132,29 @@ rdp_client_pre_connect (freerdp *instance)
   rdpSettings *rdp_settings = rdp_context->settings;
   rdpChannels *rdp_channels = rdp_context->channels;
 
-  rdp_settings->OsMajorType = OSMAJORTYPE_UNIX;
-  rdp_settings->OsMinorType = OSMINORTYPE_PSEUDO_XSERVER;
-  rdp_settings->AsyncInput = FALSE;
-  rdp_settings->NetworkAutoDetect = TRUE;
-  rdp_settings->RedirectClipboard = FALSE;
-  rdp_settings->SupportGraphicsPipeline = TRUE;
-  rdp_settings->SupportDisplayControl = FALSE;
+  freerdp_settings_set_uint32 (rdp_settings, FreeRDP_OsMajorType,
+                               OSMAJORTYPE_UNIX);
+  freerdp_settings_set_uint32 (rdp_settings, FreeRDP_OsMinorType,
+                               OSMINORTYPE_PSEUDO_XSERVER);
+
+  freerdp_settings_set_bool (rdp_settings, FreeRDP_SupportGraphicsPipeline, TRUE);
+  freerdp_settings_set_bool (rdp_settings, FreeRDP_SupportDisplayControl, FALSE);
+  freerdp_settings_set_bool (rdp_settings, FreeRDP_NetworkAutoDetect, TRUE);
+
+  freerdp_settings_set_bool (rdp_settings, FreeRDP_RedirectClipboard, FALSE);
 
   PubSub_SubscribeChannelConnected (rdp_context->pubSub,
                                     on_channel_connected);
   PubSub_SubscribeChannelDisconnected (rdp_context->pubSub,
                                        on_channel_disconnected);
 
-  if (!freerdp_client_load_addins (rdp_channels, instance->settings))
+  if (!freerdp_client_load_addins (rdp_channels, rdp_settings))
     return FALSE;
 
-  rdp_settings->DesktopWidth = TEST_1_WIDTH;
-  rdp_settings->DesktopHeight = TEST_1_HEIGHT;
+  freerdp_settings_set_uint32 (rdp_settings, FreeRDP_DesktopWidth,
+                               TEST_1_WIDTH);
+  freerdp_settings_set_uint32 (rdp_settings, FreeRDP_DesktopHeight,
+                               TEST_1_HEIGHT);
 
   return TRUE;
 }
@@ -159,18 +164,20 @@ rdp_update_desktop_resize (rdpContext *rdp_context)
 {
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) rdp_context;
   rdpSettings *rdp_settings = rdp_context->settings;
+  uint32_t desktop_width =
+    freerdp_settings_get_uint32 (rdp_settings, FreeRDP_DesktopWidth);
+  uint32_t desktop_height =
+    freerdp_settings_get_uint32 (rdp_settings, FreeRDP_DesktopHeight);
 
   g_message ("New desktop size: [%u, %u]",
-             rdp_settings->DesktopWidth, rdp_settings->DesktopHeight);
+             desktop_width, desktop_height);
 
-  if (!gdi_resize (rdp_context->gdi,
-                   rdp_settings->DesktopWidth,
-                   rdp_settings->DesktopHeight))
+  if (!gdi_resize (rdp_context->gdi, desktop_width, desktop_height))
     return FALSE;
 
   if (rdp_peer_context->test_state == TEST_STATE_TEST_1 &&
-      (rdp_settings->DesktopWidth != TEST_1_WIDTH ||
-       rdp_settings->DesktopHeight != TEST_1_HEIGHT))
+      (desktop_width != TEST_1_WIDTH ||
+       desktop_height != TEST_1_HEIGHT))
     exit_test_failure (rdp_peer_context);
 
   return TRUE;
@@ -274,12 +281,12 @@ rdp_client_verify_changed_certificate_ex (freerdp    *instance,
 }
 
 static void
-on_terminate (void               *user_data,
-              TerminateEventArgs *event_args)
+on_terminate (void                     *user_data,
+              const TerminateEventArgs *event_args)
 {
   rdpContext *rdp_context = user_data;
 
-  freerdp_abort_connect (rdp_context->instance);
+  freerdp_abort_connect_context (rdp_context);
 }
 
 static BOOL
@@ -322,7 +329,9 @@ rdp_client_free (freerdp    *instance,
 static int
 rdp_client_start (rdpContext *rdp_context)
 {
-  if (!rdp_context->settings->ServerHostname)
+  rdpSettings *rdp_settings = rdp_context->settings;
+
+  if (!freerdp_settings_get_string (rdp_settings, FreeRDP_ServerHostname))
     return -1;
 
   return 0;
@@ -355,7 +364,7 @@ run_main_loop (rdpContext *rdp_context)
       return FALSE;
     }
 
-  while (!freerdp_shall_disconnect (rdp_context->instance))
+  while (!freerdp_shall_disconnect_context (rdp_context))
     {
       n_events = 0;
 

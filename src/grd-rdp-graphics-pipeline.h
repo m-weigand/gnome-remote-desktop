@@ -20,6 +20,7 @@
 #ifndef GRD_RDP_GRAPHICS_PIPELINE_H
 #define GRD_RDP_GRAPHICS_PIPELINE_H
 
+#include <freerdp/freerdp.h>
 #include <freerdp/server/rdpgfx.h>
 #include <glib-object.h>
 
@@ -30,8 +31,8 @@ G_DECLARE_FINAL_TYPE (GrdRdpGraphicsPipeline, grd_rdp_graphics_pipeline,
                       GRD, RDP_GRAPHICS_PIPELINE, GObject)
 
 GrdRdpGraphicsPipeline *grd_rdp_graphics_pipeline_new (GrdSessionRdp              *session_rdp,
+                                                       GrdRdpRenderer             *renderer,
                                                        GrdRdpDvc                  *rdp_dvc,
-                                                       GMainContext               *pipeline_context,
                                                        HANDLE                      vcm,
                                                        rdpContext                 *rdp_context,
                                                        GrdRdpNetworkAutodetection *network_autodetection,
@@ -49,6 +50,9 @@ void grd_rdp_graphics_pipeline_create_surface (GrdRdpGraphicsPipeline *graphics_
 void grd_rdp_graphics_pipeline_delete_surface (GrdRdpGraphicsPipeline *graphics_pipeline,
                                                GrdRdpGfxSurface       *gfx_surface);
 
+GrdRdpGfxSurface *grd_rdp_graphics_pipeline_acquire_gfx_surface (GrdRdpGraphicsPipeline *graphics_pipeline,
+                                                                 GrdRdpSurface          *rdp_surface);
+
 void grd_rdp_graphics_pipeline_reset_graphics (GrdRdpGraphicsPipeline *graphics_pipeline,
                                                uint32_t                width,
                                                uint32_t                height,
@@ -60,6 +64,7 @@ void grd_rdp_graphics_pipeline_notify_new_round_trip_time (GrdRdpGraphicsPipelin
 
 gboolean grd_rdp_graphics_pipeline_refresh_gfx (GrdRdpGraphicsPipeline *graphics_pipeline,
                                                 GrdRdpSurface          *rdp_surface,
+                                                GrdRdpRenderContext    *render_context,
                                                 GrdRdpBuffer           *buffer);
 
 #endif /* GRD_RDP_GRAPHICS_PIPELINE_H */

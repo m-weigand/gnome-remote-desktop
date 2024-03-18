@@ -27,14 +27,9 @@
 
 #include "grd-dbus-mutter-remote-desktop.h"
 #include "grd-dbus-mutter-screen-cast.h"
+#include "grd-dbus-remote-desktop.h"
 #include "grd-settings.h"
 #include "grd-types.h"
-
-typedef enum _GrdRuntimeMode
-{
-  GRD_RUNTIME_MODE_SCREEN_SHARE,
-  GRD_RUNTIME_MODE_HEADLESS,
-} GrdRuntimeMode;
 
 #define GRD_TYPE_CONTEXT (grd_context_get_type ())
 G_DECLARE_FINAL_TYPE (GrdContext, grd_context, GRD, CONTEXT, GObject)
@@ -46,15 +41,23 @@ GrdDBusMutterRemoteDesktop * grd_context_get_mutter_remote_desktop_proxy (GrdCon
 
 GrdDBusMutterScreenCast * grd_context_get_mutter_screen_cast_proxy (GrdContext *context);
 
+GrdDBusRemoteDesktopRdpServer * grd_context_get_rdp_server_interface (GrdContext *context);
+
+GrdDBusRemoteDesktopVncServer * grd_context_get_vnc_server_interface (GrdContext *context);
+
 void grd_context_set_mutter_remote_desktop_proxy (GrdContext                 *context,
                                                   GrdDBusMutterRemoteDesktop *proxy);
 
 void grd_context_set_mutter_screen_cast_proxy (GrdContext              *context,
                                                GrdDBusMutterScreenCast *proxy);
 
-GrdSettings * grd_context_get_settings (GrdContext *context);
+void grd_context_set_rdp_server_interface (GrdContext                    *context,
+                                           GrdDBusRemoteDesktopRdpServer *rdp_server_iface);
 
-GrdCredentials * grd_context_get_credentials (GrdContext *context);
+void grd_context_set_vnc_server_interface (GrdContext                    *context,
+                                           GrdDBusRemoteDesktopVncServer *vnc_server_iface);
+
+GrdSettings * grd_context_get_settings (GrdContext *context);
 
 GrdEglThread * grd_context_get_egl_thread (GrdContext *context);
 
