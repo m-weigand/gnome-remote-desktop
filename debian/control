@@ -37,7 +37,7 @@ Build-Depends: asciidoc-base,
                pipewire <!nocheck>,
                python3-dbus <!nocheck>,
                python3-gi <!nocheck>,
-               systemd,
+               systemd-dev,
                wireplumber <!nocheck>
 Standards-Version: 4.6.2
 Rules-Requires-Root: no
