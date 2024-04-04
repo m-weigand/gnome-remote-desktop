@@ -121,6 +121,18 @@ index 8422659..40d9a40 100644
    audio_format_opus,
    audio_format_pcm,
  };
+@@ -639,9 +641,11 @@ rdpsnd_activated (RdpsndServerContext *rdpsnd_context)
+     {
+       AUDIO_FORMAT *audio_format = &rdpsnd_context->client_formats[i];
+ 
++#ifdef HAVE_FDK_AAC
+       if (audio_playback->aac_client_format_idx < 0 &&
+           are_audio_formats_equal (audio_format, &audio_format_aac))
+         audio_playback->aac_client_format_idx = i;
++#endif /* HAVE_FDK_AAC */
+       if (audio_playback->opus_client_format_idx < 0 &&
+           are_audio_formats_equal (audio_format, &audio_format_opus))
+         audio_playback->opus_client_format_idx = i;
 @@ -1142,6 +1146,19 @@ maybe_send_frames (GrdRdpAudioPlayback         *audio_playback,
        audio_data_free (audio_data);
      }
