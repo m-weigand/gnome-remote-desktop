@@ -13,10 +13,10 @@ but that is up to the ftpmasters, not the gnome-remote-desktop packagers
  config.h.meson               |  3 +++
  meson.build                  | 14 +++++++++++++-
  meson_options.txt            |  5 +++++
- src/grd-rdp-audio-playback.c | 17 +++++++++++++++++
+ src/grd-rdp-audio-playback.c |  4 ++++
  src/grd-rdp-dsp.c            | 25 ++++++++++++++++++++++++-
  src/meson.build              |  7 ++++++-
- 6 files changed, 68 insertions(+), 3 deletions(-)
+ 6 files changed, 55 insertions(+), 3 deletions(-)
 
 diff --git a/config.h.meson b/config.h.meson
 index 65b3c01..f3c741c 100644
@@ -33,7 +33,7 @@ index 65b3c01..f3c741c 100644
  #mesondefine HAVE_RDP
  
 diff --git a/meson.build b/meson.build
-index d7c818d..14a7e62 100644
+index 995863c..6ed9a64 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -36,6 +36,7 @@ tss2_rc_dep = dependency('tss2-rc')
@@ -108,7 +108,7 @@ index c003176..b0b279d 100644
         type: 'boolean',
         value: true,
 diff --git a/src/grd-rdp-audio-playback.c b/src/grd-rdp-audio-playback.c
-index 8422659..40d9a40 100644
+index 8422659..7293b83 100644
 --- a/src/grd-rdp-audio-playback.c
 +++ b/src/grd-rdp-audio-playback.c
 @@ -541,7 +541,9 @@ static const AUDIO_FORMAT audio_format_pcm =
@@ -133,26 +133,6 @@ index 8422659..40d9a40 100644
        if (audio_playback->opus_client_format_idx < 0 &&
            are_audio_formats_equal (audio_format, &audio_format_opus))
          audio_playback->opus_client_format_idx = i;
-@@ -1142,6 +1146,19 @@ maybe_send_frames (GrdRdpAudioPlayback         *audio_playback,
-       audio_data_free (audio_data);
-     }
- 
-+#ifdef HAVE_FDK_AAC
-+  if (audio_playback->aac_client_format_idx >= 0)
-+    {
-+      client_format_idx = audio_playback->aac_client_format_idx;
-+      codec = GRD_RDP_DSP_CODEC_AAC;
-+    }
-+  else
-+#endif /* HAVE_FDK_AAC */
-+    {
-+      client_format_idx = audio_playback->pcm_client_format_idx;
-+      codec = GRD_RDP_DSP_CODEC_NONE;
-+    }
-+
-   switch (codec)
-     {
-     case GRD_RDP_DSP_CODEC_NONE:
 diff --git a/src/grd-rdp-dsp.c b/src/grd-rdp-dsp.c
 index f83d5c5..987316e 100644
 --- a/src/grd-rdp-dsp.c
