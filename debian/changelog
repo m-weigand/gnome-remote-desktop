@@ -1,4 +1,4 @@
-gnome-remote-desktop (46.0-2) UNRELEASED; urgency=medium
+gnome-remote-desktop (46.0-2) experimental; urgency=medium
 
   [ Michael Biebl ]
   * Build-depend on systemd-dev instead of systemd (Closes: #1060499)
@@ -15,7 +15,7 @@ gnome-remote-desktop (46.0-2) UNRELEASED; urgency=medium
     Plus revert the previous previous upload change since it was stoping the
     said nogtiation to happen.
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Thu, 04 Apr 2024 04:36:23 +0200
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Thu, 04 Apr 2024 04:38:26 +0200
 
 gnome-remote-desktop (46.0-1) experimental; urgency=medium
 
