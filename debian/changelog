@@ -1,3 +1,12 @@
+gnome-remote-desktop (46.1-2) experimental; urgency=medium
+
+  * Opt into Salsa CI
+  * Simplify running dh_auto_test
+  * Run dh_installsysusers & dh_installtmpfiles (Closes: #1070119)
+    (LP: #2063333)
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Sun, 05 May 2024 14:11:47 -0400
+
 gnome-remote-desktop (46.1-1) experimental; urgency=medium
 
   * New upstream release (LP: #2062076)
