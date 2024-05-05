@@ -15,9 +15,6 @@ BUILDDIR=$(CURDIR)/obj-$(DEB_HOST_GNU_TYPE)
 override_dh_auto_configure:
 	dh_auto_configure -- -Dfdk_aac=false
 
-override_dh_auto_test:
-	dbus-run-session -- dh_auto_test
-
 # https://launchpad.net/bugs/1973028
 override_dh_installsystemduser:
 	dh_installsystemduser --no-enable
