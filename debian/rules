@@ -15,23 +15,8 @@ BUILDDIR=$(CURDIR)/obj-$(DEB_HOST_GNU_TYPE)
 override_dh_auto_configure:
 	dh_auto_configure -- -Dfdk_aac=false
 
-
-ifeq ($(DEB_HOST_ARCH),$(findstring $(DEB_HOST_ARCH),arm64 avr32 hppa m68k mips mipsel mips64 mipsn32 powerpc ppc64 s390 s390x sparc sparc64 x32))
-    TESTS_CAN_FAIL=true
-else
-    TESTS_CAN_FAIL=false
-endif
-
 override_dh_auto_test:
-	glib-compile-schemas "$(BUILDDIR)/src"
-	tmpdir=$(shell mktemp -d --tmpdir grd-XXXXXX) && \
-	  mkdir -m700 $$tmpdir/xrd && \
-	  env XDG_RUNTIME_DIR=$$tmpdir/xrd \
-	  GSETTINGS_SCHEMA_DIR="$(BUILDDIR)/src" \
-	  GSETTINGS_BACKEND=keyfile \
-	  dbus-run-session -- debian/tests-wrapper.sh \
-	  meson test -C $(BUILDDIR) --no-rebuild --verbose -t 5 \
-	    --no-stdsplit --print-errorlogs || $(TESTS_CAN_FAIL)
+	dbus-run-session -- dh_auto_test
 
 # https://launchpad.net/bugs/1973028
 override_dh_installsystemduser:
