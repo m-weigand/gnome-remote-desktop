@@ -19,7 +19,7 @@ but that is up to the ftpmasters, not the gnome-remote-desktop packagers
  6 files changed, 55 insertions(+), 3 deletions(-)
 
 diff --git a/config.h.meson b/config.h.meson
-index 65b3c01..f3c741c 100644
+index 3dff24f..32f7b29 100644
 --- a/config.h.meson
 +++ b/config.h.meson
 @@ -6,6 +6,9 @@
@@ -33,7 +33,7 @@ index 65b3c01..f3c741c 100644
  #mesondefine HAVE_RDP
  
 diff --git a/meson.build b/meson.build
-index 995863c..6ed9a64 100644
+index 54adb1c..e8dd0cc 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -36,6 +36,7 @@ tss2_rc_dep = dependency('tss2-rc')
@@ -79,8 +79,8 @@ index 995863c..6ed9a64 100644
 +cdata.set('HAVE_FDK_AAC', have_fdk_aac)
  
  cdata.set_quoted('GRD_DATA_DIR', grd_datadir)
- cdata.set_quoted('GRD_CUSTOM_CONF', grd_custom_conf)
-@@ -186,6 +194,10 @@ output = [
+ cdata.set_quoted('GRD_LIBEXEC_DIR', libexecdir)
+@@ -187,6 +195,10 @@ output = [
    '        RDP...................... ' + have_rdp.to_string(),
    '        VNC...................... ' + have_vnc.to_string(),
    '',
@@ -248,7 +248,7 @@ index f83d5c5..987316e 100644
    G_OBJECT_CLASS (grd_rdp_dsp_parent_class)->dispose (object);
  }
 diff --git a/src/meson.build b/src/meson.build
-index 914e2cc..cc84f1f 100644
+index d83b1b8..8a1df2c 100644
 --- a/src/meson.build
 +++ b/src/meson.build
 @@ -165,7 +165,6 @@ if have_rdp
