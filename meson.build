@@ -1,5 +1,5 @@
 project('gnome-remote-desktop', 'c',
-        version: '46.1',
+        version: '46.2',
         meson_version: '>= 0.58.0',
         default_options: ['warning_level=1',
                           'buildtype=debugoptimized'])
@@ -98,6 +98,7 @@ cdata.set('HAVE_RDP', have_rdp)
 cdata.set('HAVE_VNC', have_vnc)
 
 cdata.set_quoted('GRD_DATA_DIR', grd_datadir)
+cdata.set_quoted('GRD_LIBEXEC_DIR', libexecdir)
 cdata.set_quoted('GRD_CUSTOM_CONF', grd_custom_conf)
 cdata.set_quoted('GRD_DEFAULT_CONF', grd_default_conf)
 cdata.set_quoted('GRD_USERNAME', grd_username)
