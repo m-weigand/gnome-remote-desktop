@@ -245,6 +245,7 @@ grd_rewrite_path_to_user_data_dir (char       **path,
 
   if (!input_path ||
       input_path[0] == '\0' ||
+      g_str_equal (input_path, ".") ||
       G_IS_DIR_SEPARATOR (input_path[strlen (input_path) - 1]))
     input_path = fallback_path;
 
@@ -288,4 +289,54 @@ grd_write_fd_to_file (int            fd,
                                  G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET,
                                  cancellable,
                                  error);
+}
+
+gboolean
+grd_test_fd (int         fd,
+             ssize_t     max_size,
+             GFileTest  *test_results,
+             GError    **error)
+{
+  struct stat stat_results;
+  int ret;
+
+  do
+    ret = fstat (fd, &stat_results);
+  while (ret < 0 && errno == EINTR);
+
+  if (ret < 0)
+    {
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (errno),
+                   "Failed to fstat file descriptor: %s", g_strerror (errno));
+      return FALSE;
+    }
+
+  if (max_size >= 0 && S_ISREG (stat_results.st_mode) &&
+      stat_results.st_size > max_size)
+   {
+      g_autofree char *size_string = NULL;
+
+      size_string = g_format_size_full (max_size, G_FORMAT_SIZE_LONG_FORMAT);
+      g_set_error (error, G_IO_ERROR, G_FILE_ERROR_FAILED,
+                    "File size exceeds %s", size_string);
+
+      return FALSE;
+    }
+
+  *test_results = 0;
+  if (S_ISREG (stat_results.st_mode))
+    *test_results |= G_FILE_TEST_IS_REGULAR;
+  else if (S_ISDIR (stat_results.st_mode))
+    *test_results |= G_FILE_TEST_IS_DIR;
+  else if (S_ISLNK (stat_results.st_mode))
+    *test_results |= G_FILE_TEST_IS_SYMLINK;
+
+  if (stat_results.st_nlink > 0)
+    *test_results |= G_FILE_TEST_EXISTS;
+
+  if ((stat_results.st_mode & S_IXUSR) || (stat_results.st_mode & S_IXGRP) ||
+      (stat_results.st_mode & S_IXOTH))
+    *test_results |= G_FILE_TEST_IS_EXECUTABLE;
+
+  return TRUE;
 }

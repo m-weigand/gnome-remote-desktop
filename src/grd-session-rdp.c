@@ -1529,6 +1529,7 @@ rdp_peer_capabilities (freerdp_peer *peer)
   RdpPeerContext *rdp_peer_context = (RdpPeerContext *) peer->context;
   GrdSessionRdp *session_rdp = rdp_peer_context->session_rdp;
   rdpSettings *rdp_settings = peer->context->settings;
+  HANDLE vcm = rdp_peer_context->vcm;
   GrdRdpMonitorConfig *monitor_config;
   g_autoptr (GError) error = NULL;
 
@@ -1594,6 +1595,13 @@ rdp_peer_capabilities (freerdp_peer *peer)
   if (!freerdp_settings_get_bool (rdp_settings, FreeRDP_DesktopResize))
     {
       g_warning ("Client doesn't support desktop resizing, closing connection");
+      return FALSE;
+    }
+
+  if (!WTSVirtualChannelManagerIsChannelJoined (vcm, DRDYNVC_SVC_CHANNEL_NAME))
+    {
+      g_warning ("[RDP] Client doesn't support the DRDYNVC SVC, "
+                 "closing connection");
       return FALSE;
     }
 
@@ -2031,9 +2039,6 @@ socket_thread_func (gpointer data)
   uint32_t n_events;
   uint32_t n_freerdp_handles;
 
-  if (session_rdp->hwaccel_nvidia)
-    grd_hwaccel_nvidia_push_cuda_context (session_rdp->hwaccel_nvidia);
-
   peer = session_rdp->peer;
   rdp_peer_context = (RdpPeerContext *) peer->context;
   vcm = rdp_peer_context->vcm;
@@ -2075,7 +2080,7 @@ socket_thread_func (gpointer data)
 
       if (!peer->CheckFileDescriptor (peer))
         {
-          g_message ("Unable to check file descriptor, closing connection");
+          g_message ("[RDP] Network or intentional disconnect, stopping session");
           handle_client_gone (session_rdp);
           break;
         }
@@ -2141,9 +2146,6 @@ socket_thread_func (gpointer data)
       if (pending_bw_measure_stop)
         grd_rdp_network_autodetection_bw_measure_stop (network_autodetection);
     }
-
-  if (session_rdp->hwaccel_nvidia)
-    grd_hwaccel_nvidia_pop_cuda_context (session_rdp->hwaccel_nvidia);
 
   return NULL;
 }

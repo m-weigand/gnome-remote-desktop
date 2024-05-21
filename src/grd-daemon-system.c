@@ -193,6 +193,125 @@ get_routing_token_from_id (const char *id)
   return g_strdup (id + strlen (REMOTE_DESKTOP_CLIENT_OBJECT_PATH "/"));
 }
 
+static char *
+get_session_id_of_sender (GDBusConnection  *connection,
+                          const char       *name,
+                          GCancellable     *cancellable,
+                          GError          **error)
+{
+  char *session_id = NULL;
+  gboolean success;
+  pid_t pid = 0;
+  uid_t uid = 0;
+
+  success = grd_get_pid_of_sender_sync (connection,
+                                        name,
+                                        &pid,
+                                        cancellable,
+                                        error);
+  if (!success)
+    return NULL;
+
+  session_id = grd_get_session_id_from_pid (pid);
+  if (session_id)
+    return session_id;
+
+  success = grd_get_uid_of_sender_sync (connection,
+                                        name,
+                                        &uid,
+                                        cancellable,
+                                        error);
+  if (!success)
+    return NULL;
+
+  session_id = grd_get_session_id_from_uid (uid);
+  if (!session_id)
+    {
+      g_set_error (error,
+                   G_IO_ERROR,
+                   G_IO_ERROR_NOT_FOUND,
+                   "Could not find a session for user %d",
+                   (int) uid);
+    }
+
+  return session_id;
+}
+
+static char *
+get_handover_object_path_for_call (GrdDaemonSystem        *daemon_system,
+                                   GDBusMethodInvocation  *invocation,
+                                   GError                **error)
+{
+  g_autoptr (GDBusObject) object = NULL;
+  g_autofree char *object_path = NULL;
+  g_autofree char *session_id = NULL;
+  GDBusConnection *connection = NULL;
+  const char *sender = NULL;
+  GCancellable *cancellable;
+
+  connection = g_dbus_method_invocation_get_connection (invocation);
+  sender = g_dbus_method_invocation_get_sender (invocation);
+  cancellable = grd_daemon_get_cancellable (GRD_DAEMON (daemon_system));
+
+  session_id = get_session_id_of_sender (connection,
+                                         sender,
+                                         cancellable,
+                                         error);
+  if (!session_id)
+    return NULL;
+
+  object_path = g_strdup_printf ("%s/session%s",
+                                 REMOTE_DESKTOP_HANDOVERS_OBJECT_PATH,
+                                 session_id);
+
+  object = g_dbus_object_manager_get_object (
+             G_DBUS_OBJECT_MANAGER (daemon_system->handover_manager_server),
+             object_path);
+  if (!object)
+    {
+      g_set_error (error,
+                   G_DBUS_ERROR,
+                   G_DBUS_ERROR_UNKNOWN_OBJECT,
+                   "No connection waiting for handover");
+      return NULL;
+    }
+
+  return g_steal_pointer (&object_path);
+}
+
+static gboolean
+on_authorize_handover_method (GrdDBusRemoteDesktopRdpHandover *interface,
+                              GDBusMethodInvocation           *invocation,
+                              gpointer                         user_data)
+{
+  GrdRemoteClient *remote_client = user_data;
+  g_autofree char *object_path = NULL;
+  g_autoptr (GError) error = NULL;
+
+  g_assert (interface == remote_client->handover_dst->interface);
+  g_assert (remote_client->handover_dst->object_path);
+
+  object_path = get_handover_object_path_for_call (remote_client->daemon_system,
+                                                   invocation,
+                                                   &error);
+  if (!object_path)
+    {
+      g_dbus_method_invocation_return_gerror (invocation, error);
+      return FALSE;
+    }
+
+  if (g_strcmp0 (object_path, remote_client->handover_dst->object_path) != 0)
+    {
+      g_dbus_method_invocation_return_error_literal (invocation, G_DBUS_ERROR,
+                                                     G_DBUS_ERROR_ACCESS_DENIED,
+                                                     "Caller using incorrect "
+                                                     "handover");
+      return FALSE;
+    }
+
+  return TRUE;
+}
+
 static gboolean
 on_handle_start_handover (GrdDBusRemoteDesktopRdpHandover *interface,
                           GDBusMethodInvocation           *invocation,
@@ -350,6 +469,8 @@ handover_iface_new (const char      *session_id,
   handover->skeleton = g_dbus_object_skeleton_new (handover->object_path);
 
   handover->interface = grd_dbus_remote_desktop_rdp_handover_skeleton_new ();
+  g_signal_connect (handover->interface, "g-authorize-method",
+                    G_CALLBACK (on_authorize_handover_method), remote_client);
   g_signal_connect (handover->interface, "handle-start-handover",
                     G_CALLBACK (on_handle_start_handover), remote_client);
   g_signal_connect (handover->interface, "handle-take-client",
@@ -492,15 +613,30 @@ on_incoming_redirected_connection (GrdRdpServer      *rdp_server,
                                    GSocketConnection *connection,
                                    GrdDaemonSystem   *daemon_system)
 {
-  uint64_t routing_token;
-  GrdRemoteClient *remote_client;
   g_autofree char *remote_id = NULL;
+  GrdRemoteClient *remote_client;
+  uint64_t routing_token;
+  gboolean success;
 
-  g_debug ("[DaemonSystem] Incoming connection with routing token: %s",
-           routing_token_str);
+  success = g_ascii_string_to_unsigned (routing_token_str, 10, 0, UINT32_MAX,
+                                        &routing_token, NULL);
+  if (!success)
+    {
+      g_autofree char *encoded_token = NULL;
 
-  routing_token = strtoul (routing_token_str, NULL, 10);
-  remote_id = get_id_from_routing_token (routing_token);
+      g_warning ("[DaemonSystem] Incoming client connection used "
+                 "invalid routing token");
+
+      encoded_token = g_base64_encode ((unsigned char *) routing_token_str,
+                                       strlen (routing_token_str));
+      g_debug ("[DaemonSystem] Invalid routing token: %s", encoded_token);
+      return;
+    }
+
+  g_debug ("[DaemonSystem] Incoming connection with routing token: %u",
+           (uint32_t) routing_token);
+
+  remote_id = get_id_from_routing_token ((uint32_t) routing_token);
   if (!g_hash_table_lookup_extended (daemon_system->remote_clients,
                                      remote_id, NULL,
                                      (gpointer *) &remote_client))
@@ -576,92 +712,6 @@ on_rdp_server_stopped (GrdDaemonSystem *daemon_system)
   g_signal_handlers_disconnect_by_func (rdp_server,
                                         G_CALLBACK (on_incoming_redirected_connection),
                                         daemon_system);
-}
-
-static char *
-get_session_id_of_sender (GDBusConnection  *connection,
-                          const char       *name,
-                          GCancellable     *cancellable,
-                          GError          **error)
-{
-  pid_t pid = 0;
-  uid_t uid = 0;
-  gboolean success;
-  char *session_id = NULL;
-
-  success = grd_get_pid_of_sender_sync (connection,
-                                        name,
-                                        &pid,
-                                        cancellable,
-                                        error);
-  if (!success)
-    return NULL;
-
-  session_id = grd_get_session_id_from_pid (pid);
-  if (session_id)
-    return session_id;
-
-  success = grd_get_uid_of_sender_sync (connection,
-                                        name,
-                                        &uid,
-                                        cancellable,
-                                        error);
-  if (!success)
-    return NULL;
-
-  session_id = grd_get_session_id_from_uid (uid);
-  if (!session_id)
-    {
-      g_set_error (error,
-                   G_IO_ERROR,
-                   G_IO_ERROR_NOT_FOUND,
-                   "Could not find a session for user %d",
-                   (int) uid);
-    }
-
-  return session_id;
-}
-
-static char *
-get_handover_object_path_for_call (GrdDaemonSystem        *daemon_system,
-                                   GDBusMethodInvocation  *invocation,
-                                   GError                **error)
-{
-  g_autofree char *session_id = NULL;
-  g_autofree char *object_path = NULL;
-  g_autoptr (GDBusObject) object = NULL;
-  GDBusConnection *connection = NULL;
-  const char *sender = NULL;
-  GCancellable *cancellable;
-
-  connection = g_dbus_method_invocation_get_connection (invocation);
-  sender = g_dbus_method_invocation_get_sender (invocation);
-  cancellable = grd_daemon_get_cancellable (GRD_DAEMON (daemon_system));
-
-  session_id = get_session_id_of_sender (connection,
-                                         sender,
-                                         cancellable,
-                                         error);
-  if (!session_id)
-      return NULL;
-
-  object_path = g_strdup_printf ("%s/session%s",
-                                 REMOTE_DESKTOP_HANDOVERS_OBJECT_PATH,
-                                 session_id);
-
-  object = g_dbus_object_manager_get_object (
-             G_DBUS_OBJECT_MANAGER (daemon_system->handover_manager_server),
-             object_path);
-  if (!object)
-    {
-      g_set_error (error,
-                   G_DBUS_ERROR,
-                   G_DBUS_ERROR_UNKNOWN_OBJECT,
-                   "No connection waiting for handover");
-      return NULL;
-    }
-
-  return g_steal_pointer (&object_path);
 }
 
 static void
@@ -1052,9 +1102,9 @@ grd_daemon_system_init (GrdDaemonSystem *daemon_system)
 }
 
 static gboolean
-on_authorize_method (GrdDBusRemoteDesktopRdpServer *interface,
-                     GDBusMethodInvocation         *invocation,
-                     gpointer                       user_data)
+on_authorize_rdp_server_method (GrdDBusRemoteDesktopRdpServer *interface,
+                                GDBusMethodInvocation         *invocation,
+                                gpointer                       user_data)
 {
   GrdDaemonSystem *daemon_system = GRD_DAEMON_SYSTEM (user_data);
   g_autoptr (PolkitAuthorizationResult) result = NULL;
@@ -1169,7 +1219,7 @@ grd_daemon_system_startup (GApplication *app)
 
   rdp_server_interface = grd_context_get_rdp_server_interface (context);
   g_signal_connect_object (rdp_server_interface, "g-authorize-method",
-                           G_CALLBACK (on_authorize_method),
+                           G_CALLBACK (on_authorize_rdp_server_method),
                            daemon_system, 0);
 }
 
