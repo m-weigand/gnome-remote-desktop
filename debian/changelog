@@ -1,8 +1,14 @@
-gnome-remote-desktop (46.2-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (46.2-1) experimental; urgency=medium
 
-  * New upstream release
+  * SECURITY UPDATE: New upstream release (LP: #2066306)
+    - CVE-2024-5148 Limit login screen->user session handover access
+      to appropriate user. This issue only affected the 46 series.
+    - Various security hardening improvements
+    - Potential crasher fix
+    - Improved disconnection messages
+    - Broader client compatibility support
 
- -- Jeremy Bícha <jbicha@ubuntu.com>  Tue, 21 May 2024 16:36:35 -0400
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Tue, 21 May 2024 16:38:36 -0400
 
 gnome-remote-desktop (46.1-4) experimental; urgency=medium
 
