@@ -11,7 +11,9 @@ export DEB_LDFLAGS_MAINT_APPEND = -Wl,-O1 -Wl,-z,defs
 # https://bugs.debian.org/981285
 # https://launchpad.net/bugs/1977614
 override_dh_auto_configure:
-	dh_auto_configure -- -Dfdk_aac=false
+	dh_auto_configure -- \
+		-Dfdk_aac=false \
+		-Dtests=$(if $(filter nocheck,$(DEB_BUILD_OPTIONS)),false,true)
 
 # The tmpfiles postinst must be before the sysusers postinst
 execute_after_dh_installtmpfiles:
