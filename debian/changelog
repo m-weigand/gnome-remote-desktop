@@ -1,3 +1,9 @@
+gnome-remote-desktop (46.3-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Tue, 09 Jul 2024 12:00:39 -0400
+
 gnome-remote-desktop (46.2-1) experimental; urgency=medium
 
   * SECURITY UPDATE: New upstream release (LP: #2066306)
