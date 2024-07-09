@@ -27,7 +27,6 @@
 #include <spa/param/props.h>
 #include <spa/param/format-utils.h>
 #include <spa/param/video/format-utils.h>
-#include <sys/mman.h>
 
 #include "grd-context.h"
 #include "grd-egl-thread.h"
@@ -37,6 +36,7 @@
 #include "grd-rdp-buffer-pool.h"
 #include "grd-rdp-cursor-renderer.h"
 #include "grd-rdp-damage-detector.h"
+#include "grd-rdp-pw-buffer.h"
 #include "grd-rdp-session-metrics.h"
 #include "grd-rdp-surface.h"
 #include "grd-rdp-surface-renderer.h"
@@ -63,21 +63,11 @@ typedef void (* GrdRdpFrameReadyCallback) (GrdRdpPipeWireStream *stream,
                                            gboolean              success,
                                            gpointer              user_data);
 
-typedef struct
-{
-  GMutex buffer_mutex;
-  gboolean is_locked;
-} BufferContext;
-
 struct _GrdRdpFrame
 {
   gatomicrefcount refcount;
 
   GrdRdpBuffer *buffer;
-
-  gboolean has_map;
-  size_t map_size;
-  uint8_t *map;
 
   GrdRdpPipeWireStream *stream;
   GrdRdpFrameReadyCallback callback;
@@ -148,55 +138,30 @@ static void grd_rdp_frame_unref (GrdRdpFrame *frame);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (GrdRdpFrame, grd_rdp_frame_unref)
 
-static BufferContext *
-buffer_context_new (void)
-{
-  BufferContext *buffer_context;
-
-  buffer_context = g_new0 (BufferContext, 1);
-  g_mutex_init (&buffer_context->buffer_mutex);
-
-  return buffer_context;
-}
-
-static void
-buffer_context_free (BufferContext *buffer_context)
-{
-  g_mutex_clear (&buffer_context->buffer_mutex);
-
-  g_free (buffer_context);
-}
-
 static void
 acquire_pipewire_buffer_lock (GrdRdpPipeWireStream *stream,
                               struct pw_buffer     *buffer)
 {
-  BufferContext *buffer_context = NULL;
+  GrdRdpPwBuffer *rdp_pw_buffer = NULL;
 
   if (!g_hash_table_lookup_extended (stream->pipewire_buffers, buffer,
-                                     NULL, (gpointer *) &buffer_context))
+                                     NULL, (gpointer *) &rdp_pw_buffer))
     g_assert_not_reached ();
 
-  g_mutex_lock (&buffer_context->buffer_mutex);
-  g_assert (!buffer_context->is_locked);
-  buffer_context->is_locked = TRUE;
+  grd_rdp_pw_buffer_acquire_lock (rdp_pw_buffer);
 }
 
 static void
 maybe_release_pipewire_buffer_lock (GrdRdpPipeWireStream *stream,
                                     struct pw_buffer     *buffer)
 {
-  BufferContext *buffer_context = NULL;
+  GrdRdpPwBuffer *rdp_pw_buffer = NULL;
 
   if (!g_hash_table_lookup_extended (stream->pipewire_buffers, buffer,
-                                     NULL, (gpointer *) &buffer_context))
+                                     NULL, (gpointer *) &rdp_pw_buffer))
     g_assert_not_reached ();
 
-  if (!buffer_context->is_locked)
-    return;
-
-  buffer_context->is_locked = FALSE;
-  g_mutex_unlock (&buffer_context->buffer_mutex);
+  grd_rdp_pw_buffer_maybe_release_lock (rdp_pw_buffer);
 }
 
 static GrdRdpFrame *
@@ -228,8 +193,6 @@ grd_rdp_frame_unref (GrdRdpFrame *frame)
 {
   if (g_atomic_ref_count_dec (&frame->refcount))
     {
-      g_assert (!frame->has_map);
-
       g_clear_pointer (&frame->buffer, grd_rdp_buffer_release);
       g_free (frame);
     }
@@ -521,12 +484,31 @@ on_stream_param_changed (void                 *user_data,
 }
 
 static void
+handle_graphics_subsystem_failure (GrdRdpPipeWireStream *stream)
+{
+  stream->dequeuing_disallowed = TRUE;
+
+  grd_session_rdp_notify_error (stream->session_rdp,
+                                GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
+}
+
+static void
 on_stream_add_buffer (void             *user_data,
                       struct pw_buffer *buffer)
 {
   GrdRdpPipeWireStream *stream = user_data;
+  GrdRdpPwBuffer *rdp_pw_buffer;
+  g_autoptr (GError) error = NULL;
 
-  g_hash_table_insert (stream->pipewire_buffers, buffer, buffer_context_new ());
+  rdp_pw_buffer = grd_rdp_pw_buffer_new (buffer, &error);
+  if (!rdp_pw_buffer)
+    {
+      g_warning ("[RDP] Failed to add PipeWire buffer: %s", error->message);
+      handle_graphics_subsystem_failure (stream);
+      return;
+    }
+
+  g_hash_table_insert (stream->pipewire_buffers, buffer, rdp_pw_buffer);
 }
 
 static void
@@ -534,20 +516,17 @@ on_stream_remove_buffer (void             *user_data,
                          struct pw_buffer *buffer)
 {
   GrdRdpPipeWireStream *stream = user_data;
-  BufferContext *buffer_context = NULL;
+  GrdRdpPwBuffer *rdp_pw_buffer = NULL;
   g_autoptr (GMutexLocker) locker = NULL;
 
   if (!g_hash_table_lookup_extended (stream->pipewire_buffers, buffer,
-                                     NULL, (gpointer *) &buffer_context))
-    g_assert_not_reached ();
+                                     NULL, (gpointer *) &rdp_pw_buffer))
+    return;
 
   locker = g_mutex_locker_new (&stream->dequeue_mutex);
+  grd_rdp_pw_buffer_ensure_unlocked (rdp_pw_buffer);
 
-  /* Ensure buffer is not locked any more */
-  g_mutex_lock (&buffer_context->buffer_mutex);
-  g_mutex_unlock (&buffer_context->buffer_mutex);
-
-  g_hash_table_remove (stream->pipewire_buffers, buffer);
+  g_hash_table_remove (stream->pipewire_buffers, rdp_pw_buffer);
 }
 
 static void
@@ -614,12 +593,6 @@ on_frame_ready (GrdRdpPipeWireStream *stream,
 
   g_assert (frame);
   g_assert (buffer);
-
-  if (frame->has_map)
-    {
-      munmap (frame->map, frame->map_size);
-      frame->has_map = FALSE;
-    }
 
   if (!success)
     goto out;
@@ -749,7 +722,7 @@ process_frame_data (GrdRdpPipeWireStream *stream,
   int bpp;
   int width;
   int height;
-  int src_stride;
+  int32_t src_stride;
   int dst_stride;
 
   g_assert (buffer->datas[0].chunk->size > 0);
@@ -770,28 +743,25 @@ process_frame_data (GrdRdpPipeWireStream *stream,
       GrdContext *context = grd_session_get_context (session);
       GrdEglThread *egl_thread = grd_context_get_egl_thread (context);
       GrdHwAccelNvidia *hwaccel_nvidia = stream->rdp_surface->hwaccel_nvidia;
+      GrdRdpPwBuffer *rdp_pw_buffer = NULL;
       AllocateBufferData *allocate_buffer_data;
       RealizeBufferData *realize_buffer_data;
       GrdRdpBuffer *rdp_buffer;
-      size_t size;
-      uint8_t *map;
       void *src_data;
       uint32_t pbo;
       uint8_t *data_to_upload;
 
-      size = buffer->datas[0].maxsize + buffer->datas[0].mapoffset;
-      map = mmap (NULL, size, PROT_READ, MAP_PRIVATE, buffer->datas[0].fd, 0);
-      if (map == MAP_FAILED)
-        {
-          g_warning ("Failed to mmap buffer: %s", g_strerror (errno));
-          callback (stream, g_steal_pointer (&frame), FALSE, user_data);
-          return;
-        }
-      src_data = SPA_MEMBER (map, buffer->datas[0].mapoffset, uint8_t);
+      acquire_pipewire_buffer_lock (stream, pw_buffer);
+      if (!g_hash_table_lookup_extended (stream->pipewire_buffers, pw_buffer,
+                                         NULL, (gpointer *) &rdp_pw_buffer))
+        g_assert_not_reached ();
+
+      src_data = grd_rdp_pw_buffer_get_mapped_data (rdp_pw_buffer, &src_stride);
 
       frame->buffer = grd_rdp_buffer_pool_acquire (stream->buffer_pool);
       if (!frame->buffer)
         {
+          maybe_release_pipewire_buffer_lock (stream, pw_buffer);
           grd_session_rdp_notify_error (stream->session_rdp,
                                         GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
           callback (stream, g_steal_pointer (&frame), FALSE, user_data);
@@ -804,10 +774,6 @@ process_frame_data (GrdRdpPipeWireStream *stream,
       if (stream->rdp_surface->needs_no_local_data &&
           src_stride == dst_stride)
         {
-          frame->map_size = size;
-          frame->map = map;
-          frame->has_map = TRUE;
-
           data_to_upload = src_data;
         }
       else
@@ -819,13 +785,12 @@ process_frame_data (GrdRdpPipeWireStream *stream,
                            src_stride,
                            bpp);
 
-          munmap (map, size);
-
           data_to_upload = grd_rdp_buffer_get_local_data (rdp_buffer);
         }
 
       if (!hwaccel_nvidia)
         {
+          maybe_release_pipewire_buffer_lock (stream, pw_buffer);
           callback (stream, g_steal_pointer (&frame), TRUE, user_data);
           return;
         }
@@ -838,7 +803,6 @@ process_frame_data (GrdRdpPipeWireStream *stream,
       realize_buffer_data = g_new0 (RealizeBufferData, 1);
       realize_buffer_data->rdp_buffer = rdp_buffer;
 
-      acquire_pipewire_buffer_lock (stream, pw_buffer);
       grd_egl_thread_upload (egl_thread,
                              stream->egl_slot,
                              pbo,
@@ -1240,7 +1204,7 @@ grd_rdp_pipewire_stream_init (GrdRdpPipeWireStream *stream)
 
   stream->pipewire_buffers =
     g_hash_table_new_full (NULL, NULL,
-                           NULL, (GDestroyNotify) buffer_context_free);
+                           NULL, (GDestroyNotify) grd_rdp_pw_buffer_free);
 
   g_mutex_init (&stream->dequeue_mutex);
 }

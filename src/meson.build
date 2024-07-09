@@ -16,7 +16,6 @@ deps = [
   pipewire_dep,
   libei_dep,
   libnotify_dep,
-  libsystemd_dep,
   epoxy_dep,
   drm_dep,
   xkbcommon_dep,
@@ -82,12 +81,6 @@ if have_rdp
   daemon_sources += files([
     'grd-clipboard-rdp.c',
     'grd-clipboard-rdp.h',
-    'grd-daemon-handover.c',
-    'grd-daemon-handover.h',
-    'grd-daemon-system.c',
-    'grd-daemon-system.h',
-    'grd-daemon-utils.c',
-    'grd-daemon-utils.h',
     'grd-hwaccel-nvidia.c',
     'grd-hwaccel-nvidia.h',
     'grd-rdp-audio-input.c',
@@ -138,6 +131,8 @@ if have_rdp
     'grd-rdp-pipewire-stream.c',
     'grd-rdp-pipewire-stream.h',
     'grd-rdp-private.h',
+    'grd-rdp-pw-buffer.c',
+    'grd-rdp-pw-buffer.h',
     'grd-rdp-render-context.c',
     'grd-rdp-render-context.h',
     'grd-rdp-renderer.c',
@@ -161,6 +156,21 @@ if have_rdp
     'grd-session-rdp.c',
     'grd-session-rdp.h',
   ])
+
+  if libsystemd_dep.found()
+    daemon_sources += files([
+      'grd-daemon-handover.c',
+      'grd-daemon-handover.h',
+      'grd-daemon-system.c',
+      'grd-daemon-system.h',
+      'grd-daemon-utils.c',
+      'grd-daemon-utils.h',
+    ])
+
+    deps += [
+      libsystemd_dep,
+    ]
+  endif
 
   deps += [
     cuda_dep,
@@ -257,17 +267,17 @@ if have_rdp
   ctl_deps += [
     freerdp_dep,
   ]
+
+  enable_service_sources = ([
+    'grd-enable-service.c',
+  ])
+
+  enable_service_deps = [
+    glib_dep,
+    gio_dep,
+    polkit_dep,
+  ]
 endif
-
-enable_service_sources = ([
-  'grd-enable-service.c',
-])
-
-enable_service_deps = [
-  glib_dep,
-  gio_dep,
-  polkit_dep,
-]
 
 executable('gnome-remote-desktop-daemon',
            daemon_sources,
@@ -288,12 +298,14 @@ executable('grdctl',
            include_directories: [configinc],
            install: true)
 
-executable('gnome-remote-desktop-enable-service',
-           enable_service_sources,
-           dependencies: enable_service_deps,
-           include_directories: [configinc],
-           install: true,
-           install_dir: libexecdir)
+if have_rdp
+  executable('gnome-remote-desktop-enable-service',
+             enable_service_sources,
+             dependencies: enable_service_deps,
+             include_directories: [configinc],
+             install: true,
+             install_dir: libexecdir)
+endif
 
 generated_enums_schema = custom_target('gsettings-enums',
               input: 'grd-enums.h',
