@@ -1,5 +1,5 @@
 project('gnome-remote-desktop', 'c',
-        version: '46.2',
+        version: '46.3',
         meson_version: '>= 0.58.0',
         default_options: ['warning_level=1',
                           'buildtype=debugoptimized'])
@@ -94,6 +94,7 @@ cdata = configuration_data()
 cdata.set_quoted('GETTEXT_PACKAGE', 'gnome-remote-desktop')
 cdata.set_quoted('VERSION', meson.project_version())
 
+cdata.set('HAVE_LIBSYSTEMD', libsystemd_dep.found())
 cdata.set('HAVE_RDP', have_rdp)
 cdata.set('HAVE_VNC', have_vnc)
 
