@@ -19,12 +19,12 @@ but that is up to the ftpmasters, not the gnome-remote-desktop packagers
  6 files changed, 55 insertions(+), 3 deletions(-)
 
 diff --git a/config.h.meson b/config.h.meson
-index 3dff24f..32f7b29 100644
+index 9942c6c..d304027 100644
 --- a/config.h.meson
 +++ b/config.h.meson
-@@ -6,6 +6,9 @@
- /* The prefix for our gettext translation domains. */
- #mesondefine GETTEXT_PACKAGE
+@@ -9,6 +9,9 @@
+ /* Defined if LIBSYSTEMD is supported */
+ #mesondefine HAVE_LIBSYSTEMD
  
 +/* Defined if FDK AAC is available */
 +#mesondefine HAVE_FDK_AAC
@@ -33,7 +33,7 @@ index 3dff24f..32f7b29 100644
  #mesondefine HAVE_RDP
  
 diff --git a/meson.build b/meson.build
-index 54adb1c..e8dd0cc 100644
+index 6ce0cda..bbf5b9e 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -36,6 +36,7 @@ tss2_rc_dep = dependency('tss2-rc')
@@ -72,15 +72,15 @@ index 54adb1c..e8dd0cc 100644
  endif
  
  if have_vnc
-@@ -96,6 +103,7 @@ cdata.set_quoted('VERSION', meson.project_version())
- 
+@@ -97,6 +104,7 @@ cdata.set_quoted('VERSION', meson.project_version())
+ cdata.set('HAVE_LIBSYSTEMD', libsystemd_dep.found())
  cdata.set('HAVE_RDP', have_rdp)
  cdata.set('HAVE_VNC', have_vnc)
 +cdata.set('HAVE_FDK_AAC', have_fdk_aac)
  
  cdata.set_quoted('GRD_DATA_DIR', grd_datadir)
  cdata.set_quoted('GRD_LIBEXEC_DIR', libexecdir)
-@@ -187,6 +195,10 @@ output = [
+@@ -188,6 +196,10 @@ output = [
    '        RDP...................... ' + have_rdp.to_string(),
    '        VNC...................... ' + have_vnc.to_string(),
    '',
@@ -248,10 +248,10 @@ index f83d5c5..987316e 100644
    G_OBJECT_CLASS (grd_rdp_dsp_parent_class)->dispose (object);
  }
 diff --git a/src/meson.build b/src/meson.build
-index d83b1b8..8a1df2c 100644
+index 2481179..d0670ff 100644
 --- a/src/meson.build
 +++ b/src/meson.build
-@@ -165,7 +165,6 @@ if have_rdp
+@@ -175,7 +175,6 @@ if have_rdp
    deps += [
      cuda_dep,
      dl_dep,
@@ -259,7 +259,7 @@ index d83b1b8..8a1df2c 100644
      freerdp_dep,
      freerdp_server_dep,
      fuse_dep,
-@@ -173,6 +172,12 @@ if have_rdp
+@@ -183,6 +182,12 @@ if have_rdp
      polkit_dep,
      winpr_dep,
    ]
