@@ -15,10 +15,8 @@ override_dh_auto_configure:
 		-Dfdk_aac=false \
 		-Dtests=$(if $(filter nocheck,$(DEB_BUILD_OPTIONS)),false,true)
 
-# The tmpfiles postinst must be before the sysusers postinst
-execute_after_dh_installtmpfiles:
-	dh_installsysusers
-	dh_installtmpfiles
+# We manually handle tmpfiles & sysusers in postinst
+override_dh_installtmpfiles:
 
 override_dh_installsysusers:
 
