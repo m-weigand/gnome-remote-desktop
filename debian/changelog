@@ -1,8 +1,12 @@
-gnome-remote-desktop (46.3-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (46.3-1) experimental; urgency=medium
 
   * New upstream release
+  * Fix nocheck build
+  * Drop obsolete postinst rules
+  * Use custom postinst to fix long delay when first installing 46
+    (Closes: #1070119) (LP: #2072596)
 
- -- Jeremy Bícha <jbicha@ubuntu.com>  Tue, 09 Jul 2024 12:00:39 -0400
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Wed, 10 Jul 2024 08:21:50 -0400
 
 gnome-remote-desktop (46.2-1) experimental; urgency=medium
 
