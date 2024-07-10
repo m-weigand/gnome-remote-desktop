@@ -16,6 +16,7 @@ override_dh_auto_configure:
 		-Dtests=$(if $(filter nocheck,$(DEB_BUILD_OPTIONS)),false,true)
 
 # We manually handle tmpfiles & sysusers in postinst
+# Remove these 2 empty overrides when postinst is dropped
 override_dh_installtmpfiles:
 
 override_dh_installsysusers:
