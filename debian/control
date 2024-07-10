@@ -50,6 +50,8 @@ Architecture: linux-any
 Depends: fuse3,
          libmutter-14-0 (>= 46),
          pipewire (>= 0.3.0),
+         systemd | systemd-sysusers,
+         systemd | systemd-tmpfiles,
          wireplumber,
          ${misc:Depends},
          ${shlibs:Depends}
