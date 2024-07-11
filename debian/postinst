@@ -20,11 +20,11 @@ case "$1" in
         # over sequencing to reload dbus-daemon after doing this, but before
         # restarting gnome-remote-desktop
         if command -v systemd-sysusers >/dev/null; then
-            systemd-sysusers ${DPKG_ROOT:+--root="$DPKG_ROOT"} gnome-remote-desktop-sysusers.conf
+            systemd-sysusers ${DPKG_ROOT:+--root="$DPKG_ROOT"} gnome-remote-desktop-sysusers.conf || true
         fi
 
         if command -v systemd-tmpfiles >/dev/null; then
-            systemd-tmpfiles ${DPKG_ROOT:+--root="$DPKG_ROOT"} --create gnome-remote-desktop-tmpfiles.conf
+            systemd-tmpfiles ${DPKG_ROOT:+--root="$DPKG_ROOT"} --create gnome-remote-desktop-tmpfiles.conf || true
         fi
 
         # If the gnome-remote-desktop user was newly created,
