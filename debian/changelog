@@ -1,3 +1,10 @@
+gnome-remote-desktop (46.3-3) unstable; urgency=medium
+
+  * Stop ignoring build test failures except on a few architectures
+    where mutter appears to be broken (Closes: #1070463) (LP: #2072768)
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Sat, 13 Jul 2024 08:22:10 -0400
+
 gnome-remote-desktop (46.3-2) unstable; urgency=medium
 
   * Release to unstable
