@@ -1,3 +1,9 @@
+gnome-remote-desktop (46.3-4) unstable; urgency=medium
+
+  * Run upstream tests as autopkgtest (Closes: #1076270)
+
+ -- Nathan Pratta Teodosio <nathan.teodosio@canonical.com>  Thu, 01 Aug 2024 17:47:09 -0400
+
 gnome-remote-desktop (46.3-3) unstable; urgency=medium
 
   * Stop ignoring build test failures except on a few architectures
