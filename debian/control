@@ -39,7 +39,7 @@ Build-Depends: asciidoc-base,
                python3-gi <!nocheck>,
                systemd-dev,
                wireplumber <!nocheck>
-Standards-Version: 4.6.2
+Standards-Version: 4.7.0
 Rules-Requires-Root: no
 Vcs-Browser: https://salsa.debian.org/gnome-team/gnome-remote-desktop
 Vcs-Git: https://salsa.debian.org/gnome-team/gnome-remote-desktop.git
