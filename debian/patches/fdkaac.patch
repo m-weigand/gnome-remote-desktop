@@ -33,7 +33,7 @@ index 9942c6c..d304027 100644
  #mesondefine HAVE_RDP
  
 diff --git a/meson.build b/meson.build
-index 6ce0cda..bbf5b9e 100644
+index f77b86f..727e7b5 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -36,6 +36,7 @@ tss2_rc_dep = dependency('tss2-rc')
@@ -248,10 +248,10 @@ index f83d5c5..987316e 100644
    G_OBJECT_CLASS (grd_rdp_dsp_parent_class)->dispose (object);
  }
 diff --git a/src/meson.build b/src/meson.build
-index 2481179..d0670ff 100644
+index cdb5247..689e734 100644
 --- a/src/meson.build
 +++ b/src/meson.build
-@@ -175,7 +175,6 @@ if have_rdp
+@@ -177,13 +177,18 @@ if have_rdp
    deps += [
      cuda_dep,
      dl_dep,
@@ -259,8 +259,7 @@ index 2481179..d0670ff 100644
      freerdp_dep,
      freerdp_server_dep,
      fuse_dep,
-@@ -183,6 +182,12 @@ if have_rdp
-     polkit_dep,
+     opus_dep,
      winpr_dep,
    ]
 +
