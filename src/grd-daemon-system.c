@@ -25,7 +25,6 @@
 #include "grd-daemon-system.h"
 
 #include <gio/gunixfdlist.h>
-#include <polkit/polkit.h>
 
 #include "grd-context.h"
 #include "grd-daemon.h"
@@ -36,10 +35,8 @@
 #include "grd-rdp-server.h"
 #include "grd-session-rdp.h"
 #include "grd-settings.h"
-#include "grd-settings-system.h"
 
 #define MAX_HANDOVER_WAIT_TIME_MS (30 * 1000)
-#define GRD_CONFIGURE_SYSTEM_DAEMON_POLKIT_ACTION "org.gnome.remotedesktop.configure-system-daemon"
 
 typedef struct
 {
@@ -71,7 +68,6 @@ struct _GrdDaemonSystem
 {
   GrdDaemon parent;
 
-  PolkitAuthority *authority;
   GrdDBusGdmRemoteDisplayFactory *remote_display_factory_proxy;
   GDBusObjectManager *display_objects;
 
@@ -394,7 +390,6 @@ on_handle_start_handover (GrdDBusRemoteDesktopRdpHandover *interface,
   return G_DBUS_METHOD_INVOCATION_HANDLED;
 
 err:
-  abort_handover (remote_client);
   g_dbus_method_invocation_return_error (invocation,
                                          G_DBUS_ERROR,
                                          G_DBUS_ERROR_UNKNOWN_OBJECT,
@@ -641,7 +636,7 @@ on_incoming_redirected_connection (GrdRdpServer      *rdp_server,
                                      remote_id, NULL,
                                      (gpointer *) &remote_client))
     {
-      g_warning ("[DaemonSystem] Not found routing token on "
+      g_warning ("[DaemonSystem] Could not find routing token on "
                  "remote_clients list");
       return;
     }
@@ -687,6 +682,21 @@ on_incoming_new_connection (GrdRdpServer    *rdp_server,
 }
 
 static void
+inform_configuration_service (void)
+{
+  g_autoptr (GrdDBusRemoteDesktopConfigurationRdpServer) configuration = NULL;
+
+  configuration =
+    grd_dbus_remote_desktop_configuration_rdp_server_proxy_new_for_bus_sync (
+      G_BUS_TYPE_SYSTEM,
+      G_DBUS_PROXY_FLAGS_NONE,
+      REMOTE_DESKTOP_CONFIGURATION_BUS_NAME,
+      REMOTE_DESKTOP_CONFIGURATION_OBJECT_PATH,
+      NULL,
+      NULL);
+}
+
+static void
 on_rdp_server_started (GrdDaemonSystem *daemon_system)
 {
   GrdRdpServer *rdp_server =
@@ -698,6 +708,8 @@ on_rdp_server_started (GrdDaemonSystem *daemon_system)
   g_signal_connect (rdp_server, "incoming-redirected-connection",
                     G_CALLBACK (on_incoming_redirected_connection),
                     daemon_system);
+
+  inform_configuration_service ();
 }
 
 static void
@@ -712,6 +724,8 @@ on_rdp_server_stopped (GrdDaemonSystem *daemon_system)
   g_signal_handlers_disconnect_by_func (rdp_server,
                                         G_CALLBACK (on_incoming_redirected_connection),
                                         daemon_system);
+
+  inform_configuration_service ();
 }
 
 static void
@@ -896,6 +910,45 @@ on_gdm_remote_display_session_id_changed (GrdDBusGdmRemoteDisplay *remote_displa
 }
 
 static void
+on_remote_display_remote_id_changed (GrdDBusGdmRemoteDisplay *remote_display,
+                                     GParamSpec              *pspec,
+                                     GrdRemoteClient         *remote_client)
+{
+  GrdDaemonSystem *daemon_system = remote_client->daemon_system;
+  GrdRemoteClient *new_remote_client;
+  const char *remote_id;
+  const char *session_id;
+
+  remote_id = grd_dbus_gdm_remote_display_get_remote_id (remote_display);
+  if (!g_hash_table_lookup_extended (daemon_system->remote_clients,
+                                     remote_id, NULL,
+                                     (gpointer *) &new_remote_client))
+    {
+      g_debug ("[DaemonSystem] GDM set to a remote display a remote "
+               "id %s we didn't know about", remote_id);
+      return;
+    }
+
+  g_debug ("[DaemonSystem] GDM updated a remote display with a new remote id: "
+           "%s", remote_id);
+
+  g_signal_handlers_disconnect_by_func (remote_display,
+                                        G_CALLBACK (on_remote_display_remote_id_changed),
+                                        remote_client);
+  g_signal_connect (remote_display, "notify::remote-id",
+                    G_CALLBACK (on_remote_display_remote_id_changed),
+                    new_remote_client);
+
+  g_hash_table_remove (daemon_system->remote_clients, remote_client->id);
+
+  session_id = grd_dbus_gdm_remote_display_get_session_id (remote_display);
+  register_handover_iface (new_remote_client, session_id);
+
+  grd_dbus_remote_desktop_rdp_handover_emit_restart_handover (
+    new_remote_client->handover_dst->interface);
+}
+
+static void
 register_handover_for_display (GrdDaemonSystem         *daemon_system,
                                GrdDBusGdmRemoteDisplay *remote_display)
 {
@@ -912,6 +965,10 @@ register_handover_for_display (GrdDaemonSystem         *daemon_system,
                "id %s we didn't know about", remote_id);
       return;
     }
+
+  g_signal_connect (remote_display, "notify::remote-id",
+                    G_CALLBACK (on_remote_display_remote_id_changed),
+                    remote_client);
 
   session_id = grd_dbus_gdm_remote_display_get_session_id (remote_display);
   if (!session_id || strcmp (session_id, "") == 0)
@@ -1101,76 +1158,13 @@ grd_daemon_system_init (GrdDaemonSystem *daemon_system)
                            NULL, (GDestroyNotify) grd_remote_client_free);
 }
 
-static gboolean
-on_authorize_rdp_server_method (GrdDBusRemoteDesktopRdpServer *interface,
-                                GDBusMethodInvocation         *invocation,
-                                gpointer                       user_data)
-{
-  GrdDaemonSystem *daemon_system = GRD_DAEMON_SYSTEM (user_data);
-  g_autoptr (PolkitAuthorizationResult) result = NULL;
-  g_autoptr (PolkitSubject) subject = NULL;
-  PolkitCheckAuthorizationFlags flags;
-  g_autoptr (GError) error = NULL;
-  const char *sender = NULL;
-  const char *action = NULL;
-
-  if (!daemon_system->authority)
-    {
-      g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
-                                             G_DBUS_ERROR_ACCESS_DENIED,
-                                             "RDP server is shutting down");
-      return FALSE;
-    }
-
-  sender = g_dbus_method_invocation_get_sender (invocation);
-  subject = polkit_system_bus_name_new (sender);
-  action = GRD_CONFIGURE_SYSTEM_DAEMON_POLKIT_ACTION;
-  flags = POLKIT_CHECK_AUTHORIZATION_FLAGS_ALLOW_USER_INTERACTION;
-  result = polkit_authority_check_authorization_sync (daemon_system->authority,
-                                                      subject, action,
-                                                      NULL, flags, NULL,
-                                                      &error);
-  if (!result)
-    {
-      g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
-                                             G_DBUS_ERROR_FAILED,
-                                             "Failed to check authorization: %s",
-                                             error->message);
-      return FALSE;
-    }
-
-  if (!polkit_authorization_result_get_is_authorized (result))
-    {
-      g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
-                                             G_DBUS_ERROR_ACCESS_DENIED,
-                                             "Not authorized for action %s",
-                                             action);
-      return FALSE;
-    }
-
-  return TRUE;
-}
-
 static void
 grd_daemon_system_startup (GApplication *app)
 {
   GrdDaemonSystem *daemon_system = GRD_DAEMON_SYSTEM (app);
   GCancellable *cancellable =
     grd_daemon_get_cancellable (GRD_DAEMON (daemon_system));
-  GrdContext *context = grd_daemon_get_context (GRD_DAEMON (daemon_system));
-  GrdSettings *settings = grd_context_get_settings (context);
-  GrdSettingsSystem *settings_system = GRD_SETTINGS_SYSTEM (settings);
-  GrdDBusRemoteDesktopRdpServer *rdp_server_interface;
   g_autoptr (GError) error = NULL;
-
-  grd_settings_system_use_local_state (settings_system);
-
-  daemon_system->authority = polkit_authority_get_sync (NULL, &error);
-  if (!daemon_system->authority)
-    {
-      g_critical ("Error getting polkit authority: %s", error->message);
-      g_clear_error (&error);
-    }
 
   daemon_system->dispatcher_skeleton =
     grd_dbus_remote_desktop_rdp_dispatcher_skeleton_new ();
@@ -1216,19 +1210,12 @@ grd_daemon_system_startup (GApplication *app)
                     G_CALLBACK (on_rdp_server_stopped), NULL);
 
   G_APPLICATION_CLASS (grd_daemon_system_parent_class)->startup (app);
-
-  rdp_server_interface = grd_context_get_rdp_server_interface (context);
-  g_signal_connect_object (rdp_server_interface, "g-authorize-method",
-                           G_CALLBACK (on_authorize_rdp_server_method),
-                           daemon_system, 0);
 }
 
 static void
 grd_daemon_system_shutdown (GApplication *app)
 {
   GrdDaemonSystem *daemon_system = GRD_DAEMON_SYSTEM (app);
-
-  g_clear_object (&daemon_system->authority);
 
   g_clear_pointer (&daemon_system->remote_clients, g_hash_table_unref);
 

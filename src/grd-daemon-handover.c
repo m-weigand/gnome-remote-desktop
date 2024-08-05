@@ -37,8 +37,7 @@
 #include "grd-rdp-server.h"
 #include "grd-session-rdp.h"
 #include "grd-settings.h"
-
-#define MAX_HANDOVER_WAIT_TIME_MS (20 * 1000)
+#include "grd-shell-dialog.h"
 
 struct _GrdDaemonHandover
 {
@@ -53,9 +52,9 @@ struct _GrdDaemonHandover
   GrdPrompt *prompt;
   GCancellable *prompt_cancellable;
 
-  unsigned int gnome_remote_desktop_watch_name_id;
+  GrdShellDialog *dialog;
 
-  unsigned int logout_source_id;
+  unsigned int gnome_remote_desktop_watch_name_id;
 };
 
 G_DEFINE_TYPE (GrdDaemonHandover, grd_daemon_handover, GRD_TYPE_DAEMON)
@@ -80,7 +79,7 @@ on_take_client_finished (GObject      *object,
 {
   GrdDaemonHandover *daemon_handover = user_data;
   int fd;
-  int fd_idx;
+  int fd_idx = -1;
   g_autoptr (GError) error = NULL;
   g_autoptr (GSocket) socket = NULL;
   g_autoptr (GVariant) fd_variant = NULL;
@@ -99,6 +98,14 @@ on_take_client_finished (GObject      *object,
     }
 
   g_variant_get (fd_variant, "h", &fd_idx);
+  if (!G_IS_UNIX_FD_LIST (fd_list) ||
+      fd_idx < 0 || fd_idx >= g_unix_fd_list_get_length (fd_list))
+    {
+      g_warning ("Failed to acquire file descriptor: The fd list or fd index "
+                 "is invalid");
+      return;
+    }
+
   fd = g_unix_fd_list_get (fd_list, fd_idx, &error);
   if (fd == -1)
     {
@@ -228,7 +235,6 @@ on_start_handover_finished (GObject      *object,
     {
       g_warning ("[DaemonHandover] Failed to start handover: %s",
                  error->message);
-      grd_session_manager_call_logout_sync ();
       return;
     }
 
@@ -236,19 +242,6 @@ on_start_handover_finished (GObject      *object,
                 "rdp-server-cert", certificate,
                 "rdp-server-key", key,
                 NULL);
-}
-
-static gboolean
-logout (gpointer user_data)
-{
-  GrdDaemonHandover *daemon_handover = user_data;
-
-  g_warning ("[DaemonHandover] Logging out, handover timeout reached");
-
-  daemon_handover->logout_source_id = 0;
-  grd_session_manager_call_logout_sync ();
-
-  return G_SOURCE_REMOVE;
 }
 
 static void
@@ -259,8 +252,6 @@ start_handover (GrdDaemonHandover *daemon_handover,
   GCancellable *cancellable =
     grd_daemon_get_cancellable (GRD_DAEMON (daemon_handover));
   const char *object_path;
-
-  g_assert (!daemon_handover->logout_source_id);
 
   object_path = g_dbus_proxy_get_object_path (
                   G_DBUS_PROXY (daemon_handover->remote_desktop_handover));
@@ -274,25 +265,47 @@ start_handover (GrdDaemonHandover *daemon_handover,
     cancellable,
     on_start_handover_finished,
     daemon_handover);
-
-  daemon_handover->logout_source_id =
-    g_timeout_add (MAX_HANDOVER_WAIT_TIME_MS, logout, daemon_handover);
 }
 
 static void
 on_session_stopped (GrdSession        *session,
                     GrdDaemonHandover *daemon_handover)
 {
-  grd_session_manager_call_logout_sync ();
+  if (grd_is_remote_login ())
+    grd_session_manager_call_logout_sync ();
 
   daemon_handover->session = NULL;
+}
 
-  if (daemon_handover->prompt_cancellable)
-    {
-      g_cancellable_cancel (daemon_handover->prompt_cancellable);
-      g_clear_object (&daemon_handover->prompt_cancellable);
-    }
-  g_clear_object (&daemon_handover->prompt);
+static gboolean
+show_insecure_connection_dialog (GrdDaemonHandover *daemon_handover)
+{
+  GCancellable *cancellable =
+    grd_daemon_get_cancellable (GRD_DAEMON (daemon_handover));
+
+  g_assert (!daemon_handover->dialog);
+
+  daemon_handover->dialog = grd_shell_dialog_new (cancellable);
+  if (!daemon_handover->dialog)
+    return FALSE;
+
+  g_signal_connect_swapped (daemon_handover->dialog, "cancelled",
+                            G_CALLBACK (grd_session_stop),
+                            daemon_handover->session);
+
+  grd_shell_dialog_open (daemon_handover->dialog,
+                         _("Continue With Insecure Connection?"),
+                         /* Translators: Don't translate “use redirection server name:i:1”.
+                          * It's a menu option, and it's the same for all languages. */
+                         _("This Remote Desktop connection is insecure. "
+                           "To secure this connection, enable RDSTLS Security "
+                           "in your client by saving the connection settings "
+                           "in your client as an RDP file and set "
+                           "“use redirection server name:i:1” in it."),
+                         _("Disconnect"),
+                         _("Continue"));
+
+  return TRUE;
 }
 
 static void
@@ -335,22 +348,22 @@ show_insecure_connection_prompt (GrdDaemonHandover *daemon_handover)
 {
   g_autoptr (GrdPromptDefinition) prompt_definition = NULL;
 
-  if (daemon_handover->prompt)
-    return;
+  g_assert (!daemon_handover->prompt);
 
   daemon_handover->prompt = g_object_new (GRD_TYPE_PROMPT, NULL);
   daemon_handover->prompt_cancellable = g_cancellable_new ();
 
   prompt_definition = g_new0 (GrdPromptDefinition, 1);
   prompt_definition->summary =
-    g_strdup_printf (_("This connection is insecure"));
+    g_strdup_printf (_("Continue With Insecure Connection?"));
   prompt_definition->body =
-  /* Translators: Don't translate "use redirection server name:i:1".
+  /* Translators: Don't translate “use redirection server name:i:1”.
    * It's a menu option, and it's the same for all languages. */
-    g_strdup_printf (_("Do you want to continue with an insecure connection?\n"
-                       "To make it secure set "
-                       "<b>“use redirection server name:i:1”</b> "
-                       "in the RDP config file."));
+    g_strdup_printf (_("This Remote Desktop connection is insecure. "
+                       "To secure this connection, enable RDSTLS Security "
+                       "in your client by saving the connection settings "
+                       "in your client as an RDP file and set "
+                       "“use redirection server name:i:1” in it."));
   prompt_definition->cancel_label = g_strdup_printf (_("Disconnect"));
   prompt_definition->accept_label = g_strdup_printf (_("Continue"));
 
@@ -362,12 +375,30 @@ show_insecure_connection_prompt (GrdDaemonHandover *daemon_handover)
 }
 
 static void
+inform_about_insecure_connection (GrdDaemonHandover *daemon_handover)
+{
+  gboolean could_display_dialog;
+
+  could_display_dialog = show_insecure_connection_dialog (daemon_handover);
+  if (!could_display_dialog)
+    show_insecure_connection_prompt (daemon_handover);
+}
+
+static void
 on_incoming_new_connection (GrdRdpServer      *rdp_server,
                             GrdSession        *session,
                             GrdDaemonHandover *daemon_handover)
 {
   GrdContext *context = grd_daemon_get_context (GRD_DAEMON (daemon_handover));
   GrdSettings *settings = grd_context_get_settings (context);
+
+  if (daemon_handover->session)
+    {
+      g_signal_handlers_disconnect_by_func (daemon_handover->session,
+                                            G_CALLBACK (on_session_stopped),
+                                            daemon_handover);
+      grd_session_stop (daemon_handover->session);
+    }
 
   g_signal_connect (session, "stopped",
                     G_CALLBACK (on_session_stopped),
@@ -378,9 +409,7 @@ on_incoming_new_connection (GrdRdpServer      *rdp_server,
   grd_settings_recreate_rdp_credentials (settings);
 
   if (daemon_handover->use_system_credentials && grd_is_remote_login ())
-    show_insecure_connection_prompt (daemon_handover);
-
-  g_clear_handle_id (&daemon_handover->logout_source_id, g_source_remove);
+    inform_about_insecure_connection (daemon_handover);
 }
 
 static void
@@ -456,6 +485,24 @@ on_redirect_client (GrdDBusRemoteDesktopRdpHandover *interface,
 }
 
 static void
+on_restart_handover (GrdDBusRemoteDesktopRdpHandover *proxy,
+                     GrdDaemonHandover               *daemon_handover)
+{
+  GrdDaemon *daemon = GRD_DAEMON (daemon_handover);
+  GrdContext *context = grd_daemon_get_context (daemon);
+  GrdSettings *settings = grd_context_get_settings (context);
+  g_autofree char *username = NULL;
+  g_autofree char *password = NULL;
+
+  if (!grd_settings_get_rdp_credentials (settings,
+                                         &username, &password,
+                                         NULL))
+    g_assert_not_reached ();
+
+  start_handover (daemon_handover, username, password);
+}
+
+static void
 on_remote_desktop_rdp_handover_proxy_acquired (GObject      *object,
                                                GAsyncResult *result,
                                                gpointer      user_data)
@@ -478,6 +525,8 @@ on_remote_desktop_rdp_handover_proxy_acquired (GObject      *object,
 
   g_signal_connect (daemon_handover->remote_desktop_handover, "redirect-client",
                     G_CALLBACK (on_redirect_client), daemon_handover);
+  g_signal_connect (daemon_handover->remote_desktop_handover, "restart-handover",
+                    G_CALLBACK (on_restart_handover), daemon_handover);
 
   grd_daemon_maybe_enable_services (GRD_DAEMON (daemon_handover));
 }
@@ -583,6 +632,8 @@ on_gnome_remote_desktop_name_vanished (GDBusConnection *connection,
              REMOTE_DESKTOP_BUS_NAME);
 
   g_application_release (G_APPLICATION (daemon_handover));
+
+  grd_session_manager_call_logout_sync ();
 }
 
 GrdDaemonHandover *
@@ -644,14 +695,14 @@ grd_daemon_handover_shutdown (GApplication *app)
   g_clear_handle_id (&daemon_handover->gnome_remote_desktop_watch_name_id,
                      g_bus_unwatch_name);
 
-  g_clear_handle_id (&daemon_handover->logout_source_id, g_source_remove);
-
   if (daemon_handover->prompt_cancellable)
     {
       g_cancellable_cancel (daemon_handover->prompt_cancellable);
       g_clear_object (&daemon_handover->prompt_cancellable);
     }
   g_clear_object (&daemon_handover->prompt);
+
+  g_clear_object (&daemon_handover->dialog);
 
   G_APPLICATION_CLASS (grd_daemon_handover_parent_class)->shutdown (app);
 }

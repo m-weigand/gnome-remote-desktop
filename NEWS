@@ -1,23 +1,30 @@
-46.4
-====
+47.beta
+=======
+* Gracefully handle file descriptor limits
+* Introduce standalone configuration D-Bus service
+* Improve grdctl status reporting
 * Gracefully handle invalid x224Crq data
 * Fix file descriptor leak
 
 Contributors:
-  Pascal Nowack
+  Pascal Nowack, Joan Torres
 
 Translators:
-  Jose Riha [sk], Mohammed Sadiq [ml]
+  Artur S0 [ru], Scrambled 777 [hi], Yaron Shahrabani [he], Junting Wu [zh_TW],
+  Emin Tufan Çetin [tr]
 
-46.3
-====
+47.alpha
+========
+* Support persistent remote login sessions
+* Support entering new credentials via standard input when using grdctl
+* Use access portal dialogs for warning about connection insecurity
 * Avoid crash when getting invalid PipeWire buffers
 
 Contributors:
-  Dudemanguy, Pascal Nowack
+  Dudemanguy, Pascal Nowack, Ray Strode, Joan Torres
 
 Translators:
-  Daniel Mustieles [es]
+  Martin [sl], Balázs Úr [hu]
 
 46.2
 ====

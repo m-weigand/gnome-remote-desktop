@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 Pascal Nowack
+ * Copyright (C) 2024 SUSE Software Solutions Germany GmbH
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -15,39 +15,25 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
  * 02111-1307, USA.
+ *
  */
 
-#ifndef GRD_RDP_PRIVATE_H
-#define GRD_RDP_PRIVATE_H
+#ifndef GRD_SHELL_DIALOG_H
+#define GRD_SHELL_DIALOG_H
 
-#include <freerdp/freerdp.h>
+#include <gio/gio.h>
+#include <glib-object.h>
 
-#include "grd-types.h"
+#define GRD_TYPE_SHELL_DIALOG (grd_shell_dialog_get_type ())
+G_DECLARE_FINAL_TYPE (GrdShellDialog, grd_shell_dialog,
+                      GRD, SHELL_DIALOG, GObject)
 
-typedef struct _RdpPeerContext
-{
-  rdpContext rdp_context;
+GrdShellDialog *grd_shell_dialog_new (GCancellable *cancellable);
 
-  GrdSessionRdp *session_rdp;
+void grd_shell_dialog_open (GrdShellDialog *shell_dialog,
+                            const char     *title,
+                            const char     *description,
+                            const char     *cancel_label,
+                            const char     *accept_label);
 
-  RFX_CONTEXT *rfx_context;
-  wStream *encode_stream;
-
-  GrdRdpNetworkAutodetection *network_autodetection;
-
-  /* Virtual Channel Manager */
-  HANDLE vcm;
-
-  GrdRdpDvc *rdp_dvc;
-
-  GMutex channel_mutex;
-
-  GrdClipboardRdp *clipboard_rdp;
-  GrdRdpAudioInput *audio_input;
-  GrdRdpAudioPlayback *audio_playback;
-  GrdRdpDisplayControl *display_control;
-  GrdRdpGraphicsPipeline *graphics_pipeline;
-  GrdRdpTelemetry *telemetry;
-} RdpPeerContext;
-
-#endif /* GRD_RDP_PRIVATE_H */
+#endif /* GRD_SHELL_DIALOG_H */

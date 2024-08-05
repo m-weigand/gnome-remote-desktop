@@ -22,17 +22,28 @@
 
 #include <ctype.h>
 #include <gio/gio.h>
+#include <gio/gunixinputstream.h>
+#include <gio/gunixoutputstream.h>
 #include <glib/gi18n.h>
 #include <pwd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sysexits.h>
+#include <termios.h>
+#include <unistd.h>
 
 #include "grd-enums.h"
 #include "grd-settings-system.h"
 #include "grd-settings-user.h"
+#include "grd-utils.h"
 
 #define GRD_SYSTEMD_SERVICE "gnome-remote-desktop.service"
+
+typedef enum
+{
+  PROMPT_TYPE_VISIBLE_TEXT,
+  PROMPT_TYPE_HIDDEN_TEXT
+} PromptType;
 
 typedef struct _SubCommand
 {
@@ -67,6 +78,7 @@ process_options (GrdSettings       *settings,
                  const SubCommand  *subcommands,
                  int                n_subcommands)
 {
+  gboolean subcommand_exists = FALSE;
   int i;
 
   if (argc <= 0)
@@ -79,12 +91,10 @@ process_options (GrdSettings       *settings,
       if (g_strcmp0 (argv[0], subcommands[i].subcommand) != 0)
         continue;
 
+      subcommand_exists = TRUE;
+
       if (subcommands[i].n_args != argc - 1)
-        {
-          g_printerr ("Wrong number of arguments for subcommand '%s'\n",
-                      argv[0]);
-          return EX_USAGE;
-        }
+        continue;
 
       if (!subcommands[i].process (settings,
                                    argc - 1, argv + 1, &error))
@@ -99,67 +109,12 @@ process_options (GrdSettings       *settings,
       return EXIT_SUCCESS;
     }
 
-  g_printerr ("Unknown subcommand '%s'\n", argv[0]);
+  if (subcommand_exists)
+    g_printerr ("Wrong number of arguments for subcommand '%s'\n", argv[0]);
+  else
+    g_printerr ("Unknown subcommand '%s'\n", argv[0]);
+
   return EX_USAGE;
-}
-
-static gboolean
-systemd_unit_is_active (GBusType     bus_type,
-                        const char  *unit,
-                        GError     **error)
-{
-  g_autoptr (GDBusProxy) proxy = NULL;
-  g_autoptr (GVariant) result = NULL;
-  g_autofree char *object_path = NULL;
-  g_autofree char *active_state = NULL;
-  g_autoptr (GDBusProxy) unit_proxy = NULL;
-
-  proxy = g_dbus_proxy_new_for_bus_sync (bus_type,
-                                         G_DBUS_PROXY_FLAGS_NONE,
-                                         NULL,
-                                         "org.freedesktop.systemd1",
-                                         "/org/freedesktop/systemd1",
-                                         "org.freedesktop.systemd1.Manager",
-                                         NULL,
-                                         error);
-  if (!proxy)
-    return FALSE;
-
-  result = g_dbus_proxy_call_sync (proxy,
-                                   "GetUnit",
-                                   g_variant_new ("(s)", unit),
-                                   G_DBUS_CALL_FLAGS_NONE,
-                                   -1,
-                                   NULL,
-                                   error);
-  if (!result)
-    return FALSE;
-
-  g_variant_get (result, "(o)", &object_path);
-  g_clear_pointer (&result, g_variant_unref);
-
-  unit_proxy = g_dbus_proxy_new_for_bus_sync (bus_type,
-                                              G_DBUS_PROXY_FLAGS_NONE,
-                                              NULL,
-                                              "org.freedesktop.systemd1",
-                                              object_path,
-                                              "org.freedesktop.systemd1.Unit",
-                                              NULL,
-                                              error);
-  if (!unit_proxy)
-    return FALSE;
-
-  result = g_dbus_proxy_get_cached_property (unit_proxy, "ActiveState");
-  if (!result)
-    {
-      g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_PROPERTY,
-                   "An error occurred while getting the ActiveState property");
-      return FALSE;
-    }
-
-  g_variant_get (result, "s", &active_state);
-
-  return g_str_equal (active_state, "active");
 }
 
 static gboolean
@@ -172,6 +127,75 @@ is_numeric (const char *s)
     }
 
   return TRUE;
+}
+
+static char *
+prompt_for_input (const char  *prompt,
+                  PromptType   prompt_type,
+                  GError     **error)
+{
+  g_autoptr (GInputStream) input_stream = NULL;
+  g_autoptr (GOutputStream) output_stream = NULL;
+  g_autoptr (GDataInputStream) data_input_stream = NULL;
+  gboolean terminal_attributes_changed = FALSE;
+  struct termios terminal_attributes;
+  g_autofree char *input = NULL;
+  gboolean success;
+  int output_fd;
+  int input_fd;
+
+  input_fd = STDIN_FILENO;
+  output_fd = STDOUT_FILENO;
+
+  input_stream = g_unix_input_stream_new (input_fd, FALSE);
+  data_input_stream = g_data_input_stream_new (input_stream);
+
+  if (isatty (output_fd))
+    output_stream = g_unix_output_stream_new (output_fd, FALSE);
+
+  if (output_stream)
+    {
+      success = g_output_stream_write_all (output_stream, prompt, strlen (prompt), NULL, NULL, error);
+      if (!success)
+        return NULL;
+
+      if (prompt_type == PROMPT_TYPE_HIDDEN_TEXT && isatty (input_fd))
+        {
+          struct termios updated_terminal_attributes;
+          int ret;
+
+          ret = tcgetattr (input_fd, &terminal_attributes);
+          if (ret < 0)
+            {
+              g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
+                           "Could not query terminal attributes");
+              return NULL;
+            }
+
+          updated_terminal_attributes = terminal_attributes;
+          updated_terminal_attributes.c_lflag &= ~ECHO;
+
+          ret = tcsetattr (input_fd, TCSANOW, &updated_terminal_attributes);
+          if (ret < 0)
+            {
+              g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
+                           "Could not disable input echo in terminal");
+              return NULL;
+            }
+
+          terminal_attributes_changed = TRUE;
+        }
+    }
+
+  input = g_data_input_stream_read_line_utf8 (data_input_stream, NULL, NULL, error);
+
+  if (terminal_attributes_changed)
+    {
+      g_output_stream_write_all (output_stream, "\n", strlen ("\n"), NULL, NULL, NULL);
+      tcsetattr (input_fd, TCSANOW, &terminal_attributes);
+    }
+
+  return g_steal_pointer (&input);
 }
 
 #ifdef HAVE_RDP
@@ -196,57 +220,6 @@ rdp_set_port (GrdSettings  *settings,
 }
 
 static gboolean
-toggle_systemd_unit (gboolean   enabled,
-                     GError   **error)
-{
-
-  g_autoptr (GStrvBuilder) builder = NULL;
-  g_autofree char *error_output = NULL;
-  g_auto (GStrv) new_argv = NULL;
-  g_autofree char *pid = NULL;
-  int wait_status;
-  gboolean success;
-
-  builder = g_strv_builder_new ();
-
-  g_strv_builder_add (builder,
-                      GRD_LIBEXEC_DIR "/gnome-remote-desktop-enable-service");
-  pid = g_strdup_printf ("%d", getppid ());
-  g_strv_builder_add (builder, pid);
-  if (enabled)
-    g_strv_builder_add (builder, "true");
-  else
-    g_strv_builder_add (builder, "false");
-
-  new_argv = g_strv_builder_end (builder);
-
-  success = g_spawn_sync (NULL,
-                          new_argv,
-                          NULL,
-                          G_SPAWN_SEARCH_PATH |
-                          G_SPAWN_CHILD_INHERITS_STDOUT,
-                          NULL,
-                          NULL,
-                          NULL,
-                          &error_output,
-                          &wait_status,
-                          error);
-  if (!success)
-    return FALSE;
-
-  if (!WIFEXITED (wait_status) || WEXITSTATUS (wait_status) != 0)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "Could not %s system service:\n%s",
-                   enabled? "enable" : "disable",
-                   error_output);
-      return FALSE;
-    }
-
-  return success;
-}
-
-static gboolean
 rdp_enable (GrdSettings  *settings,
             int           argc,
             char        **argv,
@@ -254,7 +227,7 @@ rdp_enable (GrdSettings  *settings,
 {
   if (GRD_IS_SETTINGS_SYSTEM (settings))
     {
-      if (!toggle_systemd_unit (TRUE, error))
+      if (!grd_toggle_systemd_unit (TRUE, error))
         return FALSE;
     }
 
@@ -271,7 +244,7 @@ rdp_disable (GrdSettings  *settings,
 {
   if (GRD_IS_SETTINGS_SYSTEM (settings))
     {
-      if (!toggle_systemd_unit (FALSE, error))
+      if (!grd_toggle_systemd_unit (FALSE, error))
         return FALSE;
     }
 
@@ -324,7 +297,34 @@ rdp_set_credentials (GrdSettings  *settings,
                      char        **argv,
                      GError      **error)
 {
-  return grd_settings_set_rdp_credentials (settings, argv[0], argv[1], error);
+  g_autofree char *username = NULL;
+  g_autofree char *password = NULL;
+
+  if (argc < 1)
+    {
+      username = prompt_for_input (_("Username: "), PROMPT_TYPE_VISIBLE_TEXT,
+                                   error);
+      if (!username)
+        return FALSE;
+    }
+  else
+    {
+      username = g_strdup (argv[0]);
+    }
+
+  if (argc < 2)
+    {
+      password = prompt_for_input (_("Password: "), PROMPT_TYPE_HIDDEN_TEXT,
+                                   error);
+      if (!password)
+        return FALSE;
+    }
+  else
+    {
+      password = g_strdup (argv[1]);
+    }
+
+  return grd_settings_set_rdp_credentials (settings, username, password, error);
 }
 
 static gboolean
@@ -382,6 +382,8 @@ static const SubCommand rdp_subcommands[] = {
   { "disable", rdp_disable, 0 },
   { "set-tls-cert", rdp_set_tls_cert, 1 },
   { "set-tls-key", rdp_set_tls_key, 1 },
+  { "set-credentials", rdp_set_credentials, 0 },
+  { "set-credentials", rdp_set_credentials, 1 },
   { "set-credentials", rdp_set_credentials, 2 },
   { "clear-credentials", rdp_clear_credentials, 0 },
   { "enable-view-only", rdp_enable_view_only, 0 },
@@ -451,9 +453,20 @@ vnc_set_credentials (GrdSettings  *settings,
                      char        **argv,
                      GError      **error)
 {
-  char *password;
+  g_autofree char *password = NULL;
 
-  password = argv[0];
+  if (argc < 1)
+    {
+      password = prompt_for_input (_("Password: "), PROMPT_TYPE_HIDDEN_TEXT,
+                                   error);
+      if (!password)
+        return FALSE;
+    }
+  else
+    {
+      password = g_strdup (argv[1]);
+    }
+
   if (strlen (password) > MAX_VNC_PASSWORD_SIZE)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
@@ -461,7 +474,7 @@ vnc_set_credentials (GrdSettings  *settings,
       return FALSE;
     }
 
-  return grd_settings_set_vnc_password (settings, argv[0], error);
+  return grd_settings_set_vnc_password (settings, password, error);
 }
 
 static gboolean
@@ -547,6 +560,7 @@ static const SubCommand vnc_subcommands[] = {
   { "set-port", vnc_set_port, 1 },
   { "enable", vnc_enable, 0 },
   { "disable", vnc_disable, 0 },
+  { "set-password", vnc_set_credentials, 0 },
   { "set-password", vnc_set_credentials, 1 },
   { "clear-password", vnc_clear_credentials, 0 },
   { "set-auth-method", vnc_set_auth_method, 1 },
@@ -578,24 +592,24 @@ print_help (void)
   /* For translators: This first words on each line is the command;
    * don't translate. Try to fit each line within 80 characters. */
   const char *help_rdp =
-    _("  rdp                                        - RDP subcommands:\n"
-      "    set-port                                 - Set port the server binds to\n"
-      "    enable                                   - Enable the RDP backend\n"
-      "    disable                                  - Disable the RDP backend\n"
-      "    set-tls-cert <path-to-cert>              - Set path to TLS certificate\n"
-      "    set-tls-key <path-to-key>                - Set path to TLS key\n"
-      "    set-credentials <username> <password>    - Set username and password\n"
-      "                                               credentials\n"
-      "    clear-credentials                        - Clear username and password\n"
-      "                                               credentials\n"
-      "    enable-view-only                         - Disable remote control of input\n"
-      "                                               devices\n"
-      "    disable-view-only                        - Enable remote control of input\n"
-      "                                               devices\n"
-      "    enable-port-negotiation                  - If unavailable, listen to\n"
-      "                                               a different port\n"
-      "    disable-port-negotiation                 - If unavailable, don't listen\n"
-      "                                               to a different port\n"
+    _("  rdp                                            - RDP subcommands:\n"
+      "    set-port                                     - Set port the server binds to\n"
+      "    enable                                       - Enable the RDP backend\n"
+      "    disable                                      - Disable the RDP backend\n"
+      "    set-tls-cert <path-to-cert>                  - Set path to TLS certificate\n"
+      "    set-tls-key <path-to-key>                    - Set path to TLS key\n"
+      "    set-credentials [<username> [<password>]]    - Set username and password\n"
+      "                                                   credentials\n"
+      "    clear-credentials                            - Clear username and password\n"
+      "                                                   credentials\n"
+      "    enable-view-only                             - Disable remote control of input\n"
+      "                                                   devices\n"
+      "    disable-view-only                            - Enable remote control of input\n"
+      "                                                   devices\n"
+      "    enable-port-negotiation                      - If unavailable, listen to\n"
+      "                                                   a different port\n"
+      "    disable-port-negotiation                     - If unavailable, don't listen\n"
+      "                                                   to a different port\n"
       "\n");
 #endif /* HAVE_RDP */
 #ifdef HAVE_VNC
@@ -606,7 +620,7 @@ print_help (void)
       "    set-port                                 - Set port the server binds to\n"
       "    enable                                   - Enable the VNC backend\n"
       "    disable                                  - Disable the VNC backend\n"
-      "    set-password <password>                  - Set the VNC password\n"
+      "    set-password [<password>]                - Set the VNC password\n"
       "    clear-password                           - Clear the VNC password\n"
       "    set-auth-method password|prompt          - Set the authorization method\n"
       "    enable-view-only                         - Disable remote control of input\n"
@@ -799,24 +813,41 @@ print_vnc_status (GrdSettings *settings,
 }
 #endif /* HAVE_VNC */
 
-static const char *
-unit_status_to_string (gboolean running,
-                       gboolean use_colors)
+static char *
+unit_active_state_to_string (GrdSystemdUnitActiveState active_state,
+                             gboolean                  use_colors)
 {
+  char *state = "";
+
+  switch (active_state)
+    {
+    case GRD_SYSTEMD_UNIT_ACTIVE_STATE_ACTIVE:
+      state = "active";
+      break;
+    case GRD_SYSTEMD_UNIT_ACTIVE_STATE_RELOADING:
+      state = "reloading";
+      break;
+    case GRD_SYSTEMD_UNIT_ACTIVE_STATE_INACTIVE:
+      state = "inactive";
+      break;
+    case GRD_SYSTEMD_UNIT_ACTIVE_STATE_FAILED:
+      state = "failed";
+      break;
+    case GRD_SYSTEMD_UNIT_ACTIVE_STATE_ACTIVATING:
+      state = "activating";
+      break;
+    case GRD_SYSTEMD_UNIT_ACTIVE_STATE_DEACTIVATING:
+      state = "deactivating";
+      break;
+    case GRD_SYSTEMD_UNIT_ACTIVE_STATE_UNKNOWN:
+      state = "unknown";
+      break;
+    }
+
   if (use_colors)
-    {
-      if (running)
-        return "\x1b[1mactive\033[m";
-      else
-        return "\x1b[1minactive\033[m";
-    }
+    return g_strdup_printf ("\x1b[1m%s\033[m", state);
   else
-    {
-      if (running)
-        return "active";
-      else
-        return "inactive";
-    }
+    return g_strdup (state);
 }
 
 static void
@@ -824,23 +855,30 @@ print_service_status (GrdSettings *settings,
                       gboolean    use_colors)
 {
   GBusType bus_type;
-  gboolean service_running;
-  g_autoptr (GError) error = NULL;
+  GrdSystemdUnitActiveState active_state;
+  g_autofree char *active_state_str = NULL;
+  g_autoptr (GDBusProxy) unit_proxy = NULL;
 
   if (GRD_IS_SETTINGS_SYSTEM (settings))
       bus_type = G_BUS_TYPE_SYSTEM;
   else
       bus_type = G_BUS_TYPE_SESSION;
 
-  service_running = systemd_unit_is_active (bus_type,
-                                            GRD_SYSTEMD_SERVICE,
-                                            &error);
-  if (error)
+  if (!grd_systemd_get_unit (bus_type,
+                             GRD_SYSTEMD_SERVICE,
+                             &unit_proxy,
+                             NULL))
     return;
 
+  if (!grd_systemd_unit_get_active_state (unit_proxy,
+                                          &active_state,
+                                          NULL))
+    return;
+
+  active_state_str = unit_active_state_to_string (active_state, use_colors);
+
   printf ("Overall:\n");
-  printf ("\tUnit status: %s\n", unit_status_to_string (service_running,
-                                                        use_colors));
+  printf ("\tUnit status: %s\n", active_state_str);
 }
 
 static int
@@ -948,6 +986,7 @@ main (int   argc,
                     new_argv,
                     NULL,
                     G_SPAWN_SEARCH_PATH
+                    | G_SPAWN_CHILD_INHERITS_STDIN
                     | G_SPAWN_CHILD_INHERITS_STDOUT,
                     NULL,
                     NULL,
