@@ -32,7 +32,7 @@ Build-Depends: asciidoc-base,
                libwinpr2-dev (>= 2.3.0),
                libxkbcommon-dev (>= 1.0.0),
                meson (>= 0.47.0),
-               mutter (>= 46) <!nocheck>,
+               mutter (>= 47~beta) <!nocheck>,
                openssl <!nocheck>,
                pipewire <!nocheck>,
                python3-dbus <!nocheck>,
@@ -48,7 +48,7 @@ Homepage: https://wiki.gnome.org/Projects/Mutter/RemoteDesktop
 Package: gnome-remote-desktop
 Architecture: linux-any
 Depends: fuse3,
-         libmutter-14-0 (>= 46),
+         libmutter-15-0 (>= 47~beta),
          pipewire (>= 0.3.0),
          systemd | systemd-sysusers,
          systemd | systemd-tmpfiles,
