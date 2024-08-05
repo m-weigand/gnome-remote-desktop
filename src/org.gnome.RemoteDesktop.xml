@@ -34,6 +34,33 @@
     <property name="TlsKey" type="s" access="read" />
     <property name="ViewOnly" type="b" access="read" />
 
+    <!--
+        Binding:
+
+        Signal to inform that the RDP server is currently attempting to bind
+        the port passed as an argument.
+    -->
+    <signal name="Binding">
+      <arg name="port" type="i" />
+    </signal>
+
+  </interface>
+
+  <!--
+      org.gnome.RemoteDesktop.Configuration.Rdp.Server:
+      @short_description: Configure RDP server interface
+
+      This API is intended to report status and configure the system server.
+      No compatibility between versions is promised.
+  -->
+  <interface name="org.gnome.RemoteDesktop.Configuration.Rdp.Server">
+
+    <property name="Enabled" type="b" access="read" />
+    <property name="Port" type="i" access="read" />
+    <property name="TlsCert" type="s" access="read" />
+    <property name="TlsFingerprint" type="s" access="read" />
+    <property name="TlsKey" type="s" access="read" />
+
     <method name="Enable" />
 
     <method name="Disable" />
@@ -51,16 +78,6 @@
       <arg name="Certificate" type="(sh)" direction="in" />
       <arg name="PrivateKey" type="(sh)" direction="in" />
     </method>
-
-    <!--
-        Binding:
-
-        Signal to inform that the RDP server is currently attempting to bind
-        the port passed as an argument.
-    -->
-    <signal name="Binding">
-      <arg name="port" type="i" />
-    </signal>
 
   </interface>
 
@@ -171,6 +188,14 @@
       <arg name="username" direction="out" type="s" />
       <arg name="password" direction="out" type="s" />
     </method>
+
+    <!--
+        RestartHandover:
+
+        Signal to inform the dst server that a new handover is ready to start.
+        This happens after the first handover.
+    -->
+    <signal name="RestartHandover" />
 
   </interface>
 

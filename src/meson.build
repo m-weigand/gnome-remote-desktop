@@ -155,6 +155,8 @@ if have_rdp
     'grd-rdp-telemetry.h',
     'grd-session-rdp.c',
     'grd-session-rdp.h',
+    'grd-shell-dialog.c',
+    'grd-shell-dialog.h',
   ])
 
   if libsystemd_dep.found()
@@ -180,7 +182,6 @@ if have_rdp
     freerdp_server_dep,
     fuse_dep,
     opus_dep,
-    polkit_dep,
     winpr_dep,
   ]
 endif
@@ -217,10 +218,12 @@ gen_daemon_sources += gnome.gdbus_codegen('grd-dbus-mutter-remote-desktop',
                                           'org.gnome.Mutter.RemoteDesktop.xml',
                                           interface_prefix: 'org.gnome.Mutter.',
                                           namespace: 'GrdDBusMutter')
-gen_daemon_sources += gnome.gdbus_codegen('grd-dbus-remote-desktop',
-                                          'org.gnome.RemoteDesktop.xml',
-                                          interface_prefix: 'org.gnome.RemoteDesktop.',
-                                          namespace: 'GrdDBusRemoteDesktop')
+dbus_gen_remote_desktop = gnome.gdbus_codegen('grd-dbus-remote-desktop',
+                                              'org.gnome.RemoteDesktop.xml',
+                                              interface_prefix: 'org.gnome.RemoteDesktop.',
+                                              namespace: 'GrdDBusRemoteDesktop')
+gen_daemon_sources += dbus_gen_remote_desktop
+
 if have_rdp
   gen_daemon_sources += gnome.gdbus_codegen('grd-dbus-gdm',
                                             'org.gnome.DisplayManager.xml',
@@ -243,29 +246,43 @@ control_sources = ([
   'grd-control.c'
 ])
 
-ctl_sources = ([
-  'grd-ctl.c',
+ctl_shared_sources = ([
   'grd-debug.c',
   'grd-debug.h',
   'grd-settings.c',
   'grd-settings.h',
   'grd-settings-system.c',
   'grd-settings-system.h',
-  'grd-settings-user.c',
-  'grd-settings-user.h',
+  'grd-utils.c',
+  'grd-utils.h',
   credentials_sources,
   gen_enum_types,
+])
+
+ctl_sources = ([
+  'grd-ctl.c',
+  'grd-settings-user.c',
+  'grd-settings-user.h',
+  ctl_shared_sources,
+])
+
+configuration_sources = ([
+  'grd-configuration.c',
+  ctl_shared_sources,
+  dbus_gen_remote_desktop,
 ])
 
 ctl_deps = [
   glib_dep,
   gio_dep,
+  gio_unix_dep,
   credentials_deps,
 ]
 
 if have_rdp
   ctl_deps += [
     freerdp_dep,
+    polkit_dep,
   ]
 
   enable_service_sources = ([
@@ -302,6 +319,13 @@ if have_rdp
   executable('gnome-remote-desktop-enable-service',
              enable_service_sources,
              dependencies: enable_service_deps,
+             include_directories: [configinc],
+             install: true,
+             install_dir: libexecdir)
+
+  executable('gnome-remote-desktop-configuration-daemon',
+             configuration_sources,
+             dependencies: ctl_deps,
              include_directories: [configinc],
              install: true,
              install_dir: libexecdir)

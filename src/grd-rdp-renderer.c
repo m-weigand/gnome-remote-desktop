@@ -146,32 +146,14 @@ grd_rdp_renderer_notify_new_desktop_layout (GrdRdpRenderer *renderer,
 {
   rdpContext *rdp_context = renderer->rdp_context;
   rdpSettings *rdp_settings = rdp_context->settings;
-  uint32_t current_desktop_width =
-    freerdp_settings_get_uint32 (rdp_settings, FreeRDP_DesktopWidth);
-  uint32_t current_desktop_height =
-    freerdp_settings_get_uint32 (rdp_settings, FreeRDP_DesktopHeight);
 
-  if (renderer->graphics_pipeline)
-    renderer->pending_gfx_graphics_reset = TRUE;
-
-  if (!renderer->graphics_pipeline)
-    {
-      RdpPeerContext *rdp_peer_context = (RdpPeerContext *) rdp_context;
-
-      rfx_context_reset (rdp_peer_context->rfx_context,
-                         desktop_width, desktop_height);
-    }
-
-  if (current_desktop_width == desktop_width &&
-      current_desktop_height == desktop_height)
-    return;
+  g_assert (renderer->graphics_pipeline);
+  renderer->pending_gfx_graphics_reset = TRUE;
 
   freerdp_settings_set_uint32 (rdp_settings, FreeRDP_DesktopWidth,
                                desktop_width);
   freerdp_settings_set_uint32 (rdp_settings, FreeRDP_DesktopHeight,
                                desktop_height);
-  if (!renderer->graphics_pipeline)
-    rdp_context->update->DesktopResize (rdp_context);
 }
 
 void
@@ -423,6 +405,17 @@ grd_rdp_renderer_clear_render_contexts (GrdRdpRenderer *renderer)
 {
   g_assert (g_hash_table_size (renderer->acquired_render_contexts) == 0);
   g_hash_table_remove_all (renderer->render_context_table);
+}
+
+gboolean
+grd_rdp_renderer_render_frame (GrdRdpRenderer      *renderer,
+                               GrdRdpSurface       *rdp_surface,
+                               GrdRdpRenderContext *render_context,
+                               GrdRdpBuffer        *rdp_buffer)
+{
+  return grd_rdp_graphics_pipeline_refresh_gfx (renderer->graphics_pipeline,
+                                                rdp_surface, render_context,
+                                                rdp_buffer);
 }
 
 static gpointer

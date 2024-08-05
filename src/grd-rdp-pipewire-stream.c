@@ -30,7 +30,6 @@
 
 #include "grd-context.h"
 #include "grd-egl-thread.h"
-#include "grd-hwaccel-nvidia.h"
 #include "grd-pipewire-utils.h"
 #include "grd-rdp-buffer.h"
 #include "grd-rdp-buffer-pool.h"
@@ -438,8 +437,7 @@ on_stream_param_changed (void                 *user_data,
 
   if (!grd_rdp_damage_detector_resize_surface (stream->rdp_surface->detector,
                                                width, height) ||
-      !grd_rdp_buffer_pool_resize_buffers (stream->buffer_pool,
-                                           width, height, stride))
+      !grd_rdp_buffer_pool_resize_buffers (stream->buffer_pool, height, stride))
     {
       stream->dequeuing_disallowed = TRUE;
       grd_session_rdp_notify_error (
