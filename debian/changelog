@@ -2,7 +2,7 @@ gnome-remote-desktop (47~rc-1) UNRELEASED; urgency=medium
 
   * New upstream release
 
- -- Nathan Pratta Teodosio <nathan.teodosio@canonical.com>  Fri, 06 Sep 2024 13:57:41 +0200
+ -- Nathan Pratta Teodosio <nathan.teodosio@canonical.com>  Fri, 06 Sep 2024 14:25:11 +0200
 
 gnome-remote-desktop (47~beta-1) experimental; urgency=medium
 
