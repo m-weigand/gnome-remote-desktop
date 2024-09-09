@@ -1,6 +1,9 @@
 gnome-remote-desktop (47~rc-1) UNRELEASED; urgency=medium
 
   * New upstream release
+  * d/control: Drop libwinpr2-dev. Not replacing it by libwinpr3-dev
+    because that is already pulled with freerdp3-dev, which is already
+    a build dependency.
 
  -- Nathan Pratta Teodosio <nathan.teodosio@canonical.com>  Fri, 06 Sep 2024 14:25:11 +0200
 
