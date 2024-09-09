@@ -1,5 +1,6 @@
-gnome-remote-desktop (47~rc-1) UNRELEASED; urgency=medium
+gnome-remote-desktop (47~rc-1) experimental; urgency=medium
 
+  * Team upload
   * New upstream release
   * d/control: Drop libwinpr2-dev. Not replacing it by libwinpr3-dev
     because that is already pulled with freerdp3-dev, which is already
