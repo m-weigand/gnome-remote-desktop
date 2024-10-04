@@ -1,4 +1,4 @@
-gnome-remote-desktop (47.0-2) unstable; urgency=medium
+gnome-remote-desktop (47.0-3) unstable; urgency=medium
 
   [ Simon McVittie ]
   * Remove unused Lintian override for #1031037, fixed in
