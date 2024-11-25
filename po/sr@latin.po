@@ -1,74 +1,73 @@
-# Dutch translation for gnome-remote-desktop.master
-# Copyright (C) 2021 gnome-remote-desktop.master
-# This file is distributed under the same license as the gnome-remote-desktop.master package.
+# Serbian translation for gnome-remote-desktop.
+# Copyright © 2021 gnome-remote-desktop's COPYRIGHT HOLDER
+# This file is distributed under the same license as the gnome-remote-desktop package.
+# Marko Kostić <marko.m.kostic@gmail.com>, 2021.
+# Miroslav Nikolić <miroslavnikolic@rocketmail.com>, 2022-2024.
 #
-# Marcia van den Hout <mvdh1176@gmail.com>, 2021.
-# Hannie Dumoleyn <hannie@ubuntu-nl.org>, 2021.
-# Nathan Follens <nfollens@gnome.org>, 2021-2022, 2024.
-# Philip Goto <philip.goto@gmail.com>, 2022.
 msgid ""
 msgstr ""
-"Project-Id-Version: gnome-remote-desktop.master\n"
+"Project-Id-Version: gnome-remote-desktop master\n"
 "Report-Msgid-Bugs-To: https://gitlab.gnome.org/GNOME/gnome-remote-desktop/"
 "issues/\n"
 "POT-Creation-Date: 2024-10-05 10:10+0000\n"
-"PO-Revision-Date: 2024-10-28 00:14+0100\n"
-"Last-Translator: Nathan Follens <nfollens@gnome.org>\n"
-"Language-Team: GNOME-NL https://matrix.to/#/#nl:gnome.org\n"
-"Language: nl\n"
+"PO-Revision-Date: 2024-11-01 01:56+0100\n"
+"Last-Translator: Miroslav Nikolić <miroslavnikolic@rocketmail.com>\n"
+"Language-Team: Serbian <srpski <gnome-sr@googlegroups.org>>\n"
+"Language: sr\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Plural-Forms: nplurals=2; plural=(n != 1);\n"
-"X-Generator: Poedit 3.4.4\n"
+"Plural-Forms: nplurals=4; plural=n==1? 3 : n%10==1 && n%100!=11 ? 0 : "
+"n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2\n"
+"X-Generator: Gtranslator 46.1\n"
 
 #: data/org.gnome.remotedesktop.configure-system-daemon.policy.in:11
 msgid "Allow to configure gnome-remote-desktop's system daemon settings."
 msgstr ""
-"Laat toe de systeemdaemoninstellingen van gnome-remote-desktop te "
-"configureren."
+"Dozvoljava podešavanje pozadinskog programa Gnomove udaljene radne površine."
 
 #: data/org.gnome.remotedesktop.configure-system-daemon.policy.in:12
 msgid ""
 "Authentication is required to configure gnome-remote-desktop's system daemon "
 "settings."
 msgstr ""
-"Aanmelding is vereist om de systeemdaemoninstellingen van gnome-remote-"
-"desktop te configureren."
+"Prijava je potrebna za podešavanje podešavanje pozadinskog programa Gnomove "
+"udaljene radne površine."
 
 #: data/org.gnome.remotedesktop.enable-system-daemon.policy.in:11
 msgid "Allow to enable and disable gnome-remote-desktop's system daemon"
 msgstr ""
-"Laat toe de systeemdaemon van gnome-remote-desktop in- of uit te schakelen"
+"Omogućava uključivanje i isključivanje pozadinskog programa Gnomove udaljene "
+"radne površine"
 
 #: data/org.gnome.remotedesktop.enable-system-daemon.policy.in:12
 msgid ""
 "Authentication is required to enable or disable gnome-remote-desktop's "
 "system daemon."
 msgstr ""
-"Aanmelding is vereist om de systeemdaemon van gnome-remote-desktop in- of "
-"uit te schakelen."
+"Prijava je potrebna za uključivanje ili iskučivanje pozadinskog programa "
+"Gnomove udaljene radne površine"
 
 #: data/org.gnome.RemoteDesktop.Handover.desktop.in:4
 msgid "GNOME Remote Desktop Handover Daemon"
-msgstr "GNOME-extern-bureaublad-handoverdaemon"
+msgstr "Pozadinski program Gnomove udaljene radne površine"
 
 #: src/grd-ctl.c:70
 #, c-format
 msgid "Usage: %s [OPTIONS...] COMMAND [SUBCOMMAND]...\n"
-msgstr "Gebruik: %s [OPTIES...] OPDRACHT [SUBOPDRACHT]...\n"
+msgstr "Korišćenje: %s [OPCIJE...] NAREDBA [PODNAREDBA]...\n"
 
 #: src/grd-ctl.c:305
 msgid "Username: "
-msgstr "Gebruikersnaam: "
+msgstr "Korisničko ime: "
 
 #: src/grd-ctl.c:317 src/grd-ctl.c:460
 msgid "Password: "
-msgstr "Wachtwoord: "
+msgstr "Lozinka: "
 
 #: src/grd-ctl.c:590
 msgid "Commands:\n"
-msgstr "Opdrachten:\n"
+msgstr "Naredbe:\n"
 
 #: src/grd-ctl.c:595
 msgid ""
@@ -100,33 +99,25 @@ msgid ""
 "                                                   to a different port\n"
 "\n"
 msgstr ""
-"  rdp                                        - RDP-subopdrachten:\n"
-"    set-port                                 - Stel de poort in waarmee de "
-"server verbinding maakt\n"
-"    enable                                   - De RDP-backend inschakelen\n"
-"    disable                                  - De RDP-backend uitschakelen\n"
-"    set-tls-cert <pad-naar-cert>              - Pad naar TLS-certificaat "
-"instellen\n"
-"    set-tls-key <pad-naar-sleutel>                - Pad naar TLS-sleutel "
-"instellen\n"
-"    set-credentials [<gebruikersnaam>] [<wachtwoord>}    - Gebruikersnaam en "
-"wachtwoord instellen\n"
-"                                               credentials\n"
-"    clear-credentials                        - Gebruikersnaam en wachtwoord "
-"wissen\n"
-"                                               credentials\n"
-"    enable-view-only                         - Externe bediening van invoer "
-"uitschakelen\n"
-"                                               devices\n"
-"    disable-view-only                        - Externe bediening van invoer "
-"inschakelen\n"
-"                                               devices\n"
-"    enable-port-negotiation                  - Indien niet beschikbaar, "
-"luister op\n"
-"                                               een andere poort\n"
-"    disable-port-negotiation                 - Indien niet beschikbaar, "
-"luister niet op\n"
-"                                               een andere poort\n"
+"  rdp                                        - RDP podnaredbe:\n"
+"    set-port                                     - Podesite port na koji se "
+"server vezuje\n"
+"    enable                                   - Omogućava RDP pozadinca\n"
+"    disable                                  - Onemogućava RDP pozadinca\n"
+"    set-tls-cert <path-to-cert>              - Podešava putanju do TLS "
+"sertifikata\n"
+"    set-tls-key <path-to-key>                - Podešava putanju do TLS ključa\n"
+"    set-credentials <username> <password>    - Podešava akreditive za "
+"korisničko\n"
+"                                               ime i lozinku\n"
+"    clear-credentials                        - Čisti akreditive korisničkog "
+"imena i\n"
+"                                               lozinke\n"
+"    enable-view-only                         - Onemogućava udaljeno "
+"upravljanje\n"
+"                                               ulaznih uređaja\n"
+"    disable-view-only                        - Omogućava udaljeno upravljanje\n"
+"                                               ulaznih uređaja\n"
 "\n"
 
 #: src/grd-ctl.c:619
@@ -150,28 +141,24 @@ msgid ""
 "                                               to a different port\n"
 "\n"
 msgstr ""
-"  vnc                                        - VNC-subopdrachten:\n"
-"    set-port                                 - Stel de poort in waarmee de "
-"server verbinding maakt\n"
-"    enable                                   - De VNC-backend inschakelen\n"
-"    disable                                  - De VNC-backend uitschakelen\n"
-"    set-password [<wachtwoord>]                  - Het VNC-wachtwoord "
-"instellen\n"
-"    clear-password                           - Het VNC-wachtwoord wissen\n"
-"    set-auth-method password|prompt          - De aanmeldingsmethode "
-"instellen\n"
-"    enable-view-only                         - Externe bediening van invoer "
-"uitschakelen\n"
-"                                               devices\n"
-"    disable-view-only                        - Externe bediening van invoer "
-"inschakelen\n"
-"                                               devices\n"
-"    enable-port-negotiation                  - Indien niet beschikbaar, "
-"luister op\n"
-"                                               een andere poort\n"
-"    disable-port-negotiation                 - Indien niet beschikbaar, "
-"luister niet op\n"
-"                                               een andere poort\n"
+"  vnc                                        - VNC podnaredbe:\n"
+"    set-port                                     - Podesite port na koji se "
+"server vezuje\n"
+"    enable                                   - Omogućava VNC pozadinca\n"
+"    disable                                  - Onemogućava VNC pozadinca\n"
+"    set-password <password>                  - Podešava VNC lozinku\n"
+"    clear-password                           - Čisti VNC lozinku\n"
+"    set-auth-method password|prompt          - Podešava način autorizacije\n"
+"    enable-view-only                         - Onemogućava udaljeno "
+"upravljanje\n"
+"                                               ulaznim uređajima\n"
+"    disable-view-only                        - Omogućava udaljeno upravljanje\n"
+"                                               ulaznim uređajima\n"
+"    enable-port-negotiation                  - Ukoliko nije dostupno, sluša\n"
+"                                               drugi port\n"
+"    disable-port-negotiation                 - Ukoliko nije dostupno ne "
+"sluša\n"
+"                                               drugi port\n"
 "\n"
 
 #: src/grd-ctl.c:639
@@ -184,22 +171,23 @@ msgid ""
 "  --system                                   - Configure system daemon\n"
 "  --help                                     - Print this help text\n"
 msgstr ""
-"  status [--show-credentials]                - Huidige status tonen\n"
+"  status [--show-credentials]                - Prikazuje trenutno stanje\n"
 "\n"
-"Opties:\n"
-"  --headless                                 - Gebruik ‘headless’ opslag "
-"voor gebruikersnaam en wachtwoord\n"
-"  --system                                   - Systeemdaemon configureren\n"
-"  --help                                     - Deze hulptekst tonen\n"
+"Opcije:\n"
+"  --headless                                 - Koristi bezglavo smeštanje "
+"oponumoćenja\n"
+"  --system                                   - Podešava pozadinski program "
+"sistema\n"
+"  --help                                     - Prikazuje ovu poruku pomoći\n"
 
 #: src/grd-daemon.c:992
 msgid "GNOME Remote Desktop"
-msgstr "GNOME Extern bureaublad"
+msgstr "Gnomova udaljena površ"
 
 #: src/grd-daemon-handover.c:297 src/grd-daemon-handover.c:358
 #, c-format
 msgid "Continue With Insecure Connection?"
-msgstr "Verdergaan met onveilige verbinding?"
+msgstr "Da nastavim sa nesigurnom vezom?"
 
 #. Translators: Don't translate “use redirection server name:i:1”.
 #. * It's a menu option, and it's the same for all languages.
@@ -210,25 +198,24 @@ msgid ""
 "enable RDSTLS Security in your client by saving the connection settings in "
 "your client as an RDP file and set “use redirection server name:i:1” in it."
 msgstr ""
-"Deze externe bureaubladverbinding is onveilig. Om de verbinding te "
-"beveiligen slaat u de verbindingsinstellingen in uw cliënt op als RDP-"
-"bestand, en stelt u ‘use redirection server name:i:1’ erin in. Op die manier "
-"schakelt u de RDSTLS-beveiliging in uw cliënt in."
+"Ova veza do udaljene radne površina nije sigurna. Za sigurniju vezu, uključite "
+"RDSTLS sigurnost klijenta izmenom podešavanja veze unutar RDP datoteke, "
+"dodavanjem opcije „use redirection server name:i:1“."
 
 #: src/grd-daemon-handover.c:305 src/grd-daemon-handover.c:367
 #, c-format
 msgid "Disconnect"
-msgstr "Verbinding verbreken"
+msgstr "Prekini vezu"
 
 #: src/grd-daemon-handover.c:306 src/grd-daemon-handover.c:368
 #, c-format
 msgid "Continue"
-msgstr "Doorgaan"
+msgstr "Nastavi"
 
 #: src/grd-daemon-user.c:99
 #, c-format
 msgid "Desktop Sharing port changed"
-msgstr "Poort voor delen van bureaublad gewijzigd"
+msgstr "Port za deljenje radne površi je promenjen"
 
 #: src/grd-daemon-user.c:101
 #, c-format
@@ -237,20 +224,19 @@ msgid ""
 "This is because the Remote Sessions service has been activated and it has a "
 "higher priority to use port <b>%i</b>."
 msgstr ""
-"De poort voor het delen van het bureaublad is gewijzigd van <b>%i</b> naar "
-"<b>%i</b>.\n"
-"Dit komt omdat de externesessiesdienst geactiveerd is en deze een hogere "
-"prioriteit heeft om poort <b>%i</b> te gebruiken."
+"Port za deljenje radne površine je promenjen iz <b>%i</b> u <b>%i</b>.\n"
+"Ovo se desilo zato što je servis udaljene sesije akriviran i ima viši "
+"prioritet da koristi port <b>%i</b>."
 
 #: src/grd-daemon-user.c:107 src/grd-session-vnc.c:310
 #, c-format
 msgid "Accept"
-msgstr "Accepteren"
+msgstr "Prihvati"
 
 #: src/grd-session-vnc.c:305
 #, c-format
 msgid "Do you want to share your desktop?"
-msgstr "Wilt u uw bureaublad delen?"
+msgstr "Da li želite podeliti sadržaj vašeg ekrana?"
 
 #: src/grd-session-vnc.c:307
 #, c-format
@@ -258,49 +244,45 @@ msgid ""
 "A user on the computer '%s' is trying to remotely view or control your "
 "desktop."
 msgstr ""
-"Een gebruiker op computer ‘%s’ probeert uw bureaublad op afstand te bekijken "
-"of te bedienen."
+"Korisnik na računaru „%s“ želi da udaljeno pregleda i upravlja vašom radnom "
+"površinom."
 
 #: src/grd-session-vnc.c:309
 #, c-format
 msgid "Refuse"
-msgstr "Weigeren"
+msgstr "Odbij"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:7
 msgid "The port used by the RDP server"
-msgstr "De poort gebruikt door de RDP-server"
+msgstr "Port koji koristi RDP server"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:8
 msgid "The RDP client will connect to this port to use this RDP server."
-msgstr ""
-"De RDP-cliënt zal verbinding maken met deze poort om deze RDP-server te "
-"gebruiken."
+msgstr "RDP klijent će se povezati na ovaj port kako bi koristio RDP server."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:14
 msgid "Search a different RDP port if the configured one is used"
-msgstr ""
-"Zoek naar een andere RDP-poort als de ingestelde poort reeds in gebruik is"
+msgstr "Potražite drugi RDP port ukoliko je podešeni port zauzet"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:15
 msgid ""
 "When negotiate-port is set to 'true' the RDP server will attempt to listen "
 "to the first available of the next 10 ports starting from the configured one."
 msgstr ""
-"Wanneer negotiate-port ingesteld is op ‘true’, zal de RDP-server proberen te "
-"luisteren naar de eerste beschikbare poort van de eerstvolgende 10 poorten, "
-"beginnend bij de geconfigureerde poort."
+"Ukoliko je „negotiate-port“ postavljeno na „true“, RDP server će pokušati da "
+"sluša prvo dostupni port koji se nalazi u narednih 10 portova od podešenog."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:23
 msgid "Whether the RDP backend is enabled or not"
-msgstr "Of de RDP-backend is ingeschakeld of niet"
+msgstr "Da li je RDP pozadinac omogućen ili ne"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:24
 msgid "If set to 'true' the RDP backend will be initialized."
-msgstr "Indien ingesteld op ‘waar’ zal de RDP-backend geïnitialiseerd worden."
+msgstr "Ako je izabrano, RDP pozadinac biće pokrenut."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:30
 msgid "Screenshare mode of RDP connections"
-msgstr "Schermdeelmodus van RDP-verbindingen"
+msgstr "Režim deljenja ekrana za RDP veze"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:31
 msgid ""
@@ -317,24 +299,21 @@ msgid ""
 "resolution of this virtual monitor is derived from the monitor "
 "configuration, submitted by the remote desktop client."
 msgstr ""
-"De schermdeelmodus bepaalt of de RDP-backend het hoofdscherm spiegelt, of er "
-"een virtueel beeldscherm ingesteld wordt. Voor de beginresolutie van het "
-"virtueel beeldscherm gebruikt de RDP-backend de cliëntkerngegevens ([MS-"
-"RDPBCGR] 2.2.1.3.2) of de cliëntbeeldschermgegevens ([MS-RDPBCGR] "
-"2.2.1.3.6), afhankelijk van wat er beschikbaar is. Bij het gebruik van een "
-"externe bureaubladsessie met een virtueel beeldscherm kunnen cliënten de "
-"resolutie van het virtueel beeldscherm tijdens de sessies aanpassen met "
-"behulp van de Display Update Virtual Channel Extension ([MS-RDPEDISP]). "
-"Toegestane schermdeelmodi zijn: * mirror-primary (spiegel-hoofdscherm) - "
-"Neem het hoofdbeeldscherm van de huidige gebruikerssessie op. * extend "
-"(uitbreiden) - Stel een nieuw virtueel beeldscherm in en gebruik het voor de "
-"externe bureaubladsessie. De resolutie van dit virtueel beeldscherm wordt "
-"afgeleid uit de beeldschermconfiguratie die door de externe bureaubladcliënt "
-"wordt meegedeeld."
+"Režim deljenja ekrana određuje da li RDP pozadinac preslikava primarni ekran "
+"ili se pravi virtuelni ekran. Za početnu rezoluciju virtuelnog ekrana, RDP "
+"pozadinac koristi ili osnovne podatke klijenta ([MS-RDPBCGR] 2.2.1.3.2) ili "
+"podatke ekrana klijenta ([MS-RDPBCGR] 2.2.1.3.6), zavisno od toga šta je "
+"dostupno. Kada se koristi sesija udaljenog pristupa sa virtuelnim ekranom, "
+"klijenti mogu promeniti rezoluciju virtuelnog ekrana u toku sesije sa "
+"„Display Update Virtual Channel Extension“ ([MS-RDPEDISP]). Dozvoljeni režimi "
+"deljenja ekrana sadrže: * mirror-primary – snima primarni ekran trenutne "
+"korisničke sesije. * extend – pravi novi virtuelni ekran i koristi ga tokom "
+"sesije udaljenog pristupa. Rezolucija ovog virtuelnog ekrana se izvodi iz "
+"podešavanja ekrana, koje šalje klijent udaljenog pristupa."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:57
 msgid "Path to the certificate file"
-msgstr "Pad naar het certificaatbestand"
+msgstr "Putanja do datoteke sertifikata"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:58
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:66
@@ -342,70 +321,65 @@ msgid ""
 "In order to be able to use RDP with TLS Security, both the private key file "
 "and the certificate file need to be provided to the RDP server."
 msgstr ""
-"Om RDP met TLS-beveiliging te kunnen gebruiken, moeten zowel het "
-"privésleutelbestand als het certificaatbestand aan de RDP-server worden "
-"verstrekt."
+"Da biste koristili RDP sa TLS bezbednošću, morate dati i datoteku privatnog "
+"ključa i datoteku sertifikata RDP serveru."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:65
 msgid "Path to the private key file"
-msgstr "Pad naar het privésleutelbestand"
+msgstr "Putanja do datoteke privatnog ključa"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:73
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:106
 msgid "Only allow remote connections to view the screen content"
-msgstr "Externe verbindingen alleen toestaan om de scherminhoud te bekijken"
+msgstr "Samo dozvoli udaljenim vezama pregledanje sadržaja ekrana"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:74
 msgid ""
 "When view-only is true, remote RDP connections cannot manipulate input "
 "devices (e.g. mouse and keyboard)."
 msgstr ""
-"Als alleen-lezen waar is, kunnen externe RDP-verbindingen geen "
-"invoerapparaten manipuleren (zoals muis en toetsenbord)."
+"Kada je samo gledanje omogućeno, udaljene RDP veze ne mogu koristiti ulazne "
+"uređaje (npr.: miša i tastaturu)."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:83
 msgid "The port used by the VNC server"
-msgstr "De poort gebruikt door de VNC-server"
+msgstr "Ovaj port koristi VNC server"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:84
 msgid "The VNC client will connect to this port to use this VNC server."
-msgstr ""
-"De VNC-cliënt zal verbinding maken met deze poort om deze VNC-server te "
-"gebruiken."
+msgstr "VNC klijent će se povezati na ovaj port kada koristi VNC server."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:90
 msgid "Search a different VNC port if the configured one is used"
-msgstr ""
-"Zoek naar een andere VNC-poort als de ingestelde poort reeds in gebruik is"
+msgstr "Potražite drugi VNC port ukoliko je podešeni port zauzet"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:91
 msgid ""
 "When negotiate-port is set to 'true' the VNC server will attempt to listen "
 "to the first available of the next 10 ports starting from the configured one."
 msgstr ""
-"Wanneer negotiate-port ingesteld is op ‘true’, zal de VNC-server proberen te "
-"luisteren naar de eerste beschikbare poort van de eerstvolgende 10 poorten, "
-"beginnend bij de geconfigureerde poort."
+"Ukoliko je „negotiate-port“ postavljen na „true“, VNC server će pokušati da "
+"sluša prvi slobodni koji se nalazi u narednih 10 portova od podešenog."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:99
 msgid "Whether the VNC backend is enabled or not"
-msgstr "Of de VNC-backend is ingeschakeld of niet"
+msgstr "Da li je VNC pozadinac omogućen ili ne"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:100
 msgid "If set to 'true' the VNC backend will be initialized."
-msgstr "Indien ingesteld op ‘waar’ zal de VNC-backend geïnitialiseerd worden."
+msgstr "Ako je podešeno na „true“, VNC pozadinac biće podešen."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:107
 msgid ""
 "When view-only is true, remote VNC connections cannot manipulate input "
 "devices (e.g. mouse and keyboard)."
 msgstr ""
-"Als alleen-lezen waar is, kunnen externe VNC-verbindingen geen "
-"invoerapparaten manipuleren (zoals muis en toetsenbord)."
+"Kada je samo gledanje omogućeno, udaljene VNC veze ne mogu koristiti ulazne "
+"uređaje (npr.: miša i tastaturu)."
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:114
 msgid "Method used to authenticate VNC connections"
-msgstr "Methode die wordt gebruikt om VNC-verbindingen te verifiëren"
+msgstr "Način potvrde identiteta VNC veza"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:115
 msgid ""
@@ -415,17 +389,15 @@ msgid ""
 "access to the workstation to explicitly approve the new connection. * "
 "password - by requiring the remote client to provide a known password"
 msgstr ""
-"De VNC-authenticatiemethode beschrijft hoe een externe verbinding wordt "
-"geverifieerd. Dit kan momenteel op twee verschillende manieren worden "
-"gedaan: * prompt (vragen) - door de gebruiker om elke nieuwe verbinding te "
-"vragen, waarbij een persoon met fysieke toegang tot het werkstation wordt "
-"gevraagd om de nieuwe verbinding uitdrukkelijk goed te keuren. * password "
-"(wachtwoord) - door de externe cliënt te vragen een bekend wachtwoord op te "
-"geven"
+"Način potvrde identiteta VNC veza opisuje kako se udaljena veza "
+"autentifikuje. Trenutno se to može uraditi na dva načina: * prompt - pita "
+"korisnika za svaku novu vezu, zahteva osobu sa fizičkim pristupom radnoj "
+"stanici da bi se svaka nova veza eksplicitno odobrila. * password - zahteva "
+"od udaljenog klijenta da dostavi postojeću lozinku"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:127
 msgid "Screenshare mode of VNC connections"
-msgstr "Schermdeelmodus van VNC-verbindingen"
+msgstr "Režim deljenja ekrana za VNC veze"
 
 #: src/org.gnome.desktop.remote-desktop.gschema.xml.in:128
 msgid ""
@@ -441,29 +413,14 @@ msgid ""
 "Clients can override the initial resolution with subsequent monitor "
 "configuration updates."
 msgstr ""
-"De schermdeelmodus bepaalt of de VNC-backend het hoofdscherm spiegelt, of er "
-"een virtueel beeldscherm ingesteld wordt. Voor de beginresolutie van het "
-"virtueel beeldscherm gebruikt de VNC-backend een standaardgrootte van "
-"1920x1080 pixels. Bij het gebruik van een externe bureaubladsessie met een "
-"virtueel beeldscherm kunnen cliënten de resolutie van het virtueel "
-"beeldscherm tijdens de sessies aanpassen met behulp van de setDesktopSize-"
-"PDU. Toegestane schermdeelmodi zijn: * mirror-primary (spiegel-hoofdscherm) "
-"- Neem het hoofdbeeldscherm van de huidige gebruikerssessie op. * extend "
-"(uitbreiden) - Stel een nieuw virtueel beeldscherm in en gebruik het voor de "
-"externe bureaubladsessie. De beginresolutie van dit virtueel beeldscherm "
-"wordt ingesteld op 1920x1080 pixels. Cliënten kunnen de beginresolutie "
-"overschrijven door middel van beeldschermconfiguratieupdates."
-
-#, c-format
-#~ msgid "This connection is insecure"
-#~ msgstr "Deze verbinding is onveilig"
-
-#, c-format
-#~ msgid ""
-#~ "Do you want to continue with an insecure connection?\n"
-#~ "To make it secure set <b>“use redirection server name:i:1”</b> in the RDP "
-#~ "config file."
-#~ msgstr ""
-#~ "Wilt u verdergaan via een onveilige verbinding?\n"
-#~ "Stel <b>‘use redirection server name:i:1’</b> in in het RDP-"
-#~ "configuratiebestand om de verbinding te beveiligen."
+"Režim deljenja ekrana navodi da li RDP pozadinac preslikava primarni ekran ili "
+"se pravi virtuelni ekran. Za početnu rezoluciju virtuelnog ekrana, RDP "
+"pozadinac koristi ili osnovne podatke klijenta ([MS-RDPBCGR] 2.2.1.3.2) ili "
+"podatke ekrana klijenta ([MS-RDPBCGR] 2.2.1.3.6), zavisno od toga šta je "
+"dostupno. Kada se koristi sesija udaljenog pristupa sa virtuelnim ekranom, "
+"klijenti mogu promeniti veličinu virtuelnog ekrana u toku sesije sa "
+"„setDesktopSize PDU“. Dozvoljeni režimi deljenja ekrana sadrže: * mirror-"
+"primary – snima primarni ekran trenutne korisničke sesije. * extend – pravi "
+"novi virtuelni ekran i koristi ga tokom sesije udaljenog pristupa. Rezolucija "
+"ovog virtuelnog ekrana se izvodi iz podešavanja ekrana, koje šalje klijent "
+"udaljenog pristupa."
