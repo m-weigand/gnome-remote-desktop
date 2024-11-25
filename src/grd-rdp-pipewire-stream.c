@@ -198,6 +198,16 @@ grd_rdp_frame_unref (GrdRdpFrame *frame)
 }
 
 static void
+grd_rdp_frame_invoke_callback (GrdRdpFrame *frame,
+                               gboolean     success)
+{
+  frame->callback (frame->stream,
+                   frame,
+                   success,
+                   frame->callback_user_data);
+}
+
+static void
 add_common_format_params (struct spa_pod_builder     *pod_builder,
                           enum spa_video_format       spa_format,
                           const GrdRdpVirtualMonitor *virtual_monitor,
@@ -703,10 +713,7 @@ on_framebuffer_ready (gboolean success,
 {
   GrdRdpFrame *frame = user_data;
 
-  frame->callback (frame->stream,
-                   frame,
-                   success,
-                   frame->callback_user_data);
+  grd_rdp_frame_invoke_callback (frame, success);
 }
 
 static void
@@ -715,8 +722,6 @@ process_frame_data (GrdRdpPipeWireStream *stream,
 {
   struct spa_buffer *buffer = pw_buffer->buffer;
   g_autoptr (GrdRdpFrame) frame = NULL;
-  GrdRdpFrameReadyCallback callback;
-  gpointer user_data;
   uint32_t drm_format;
   int bpp;
   int width;
@@ -733,8 +738,6 @@ process_frame_data (GrdRdpPipeWireStream *stream,
                               &drm_format, &bpp);
 
   frame = grd_rdp_frame_new (stream, on_frame_ready, pw_buffer);
-  callback = frame->callback;
-  user_data = frame->callback_user_data;
 
   if (buffer->datas[0].type == SPA_DATA_MemFd)
     {
@@ -760,10 +763,9 @@ process_frame_data (GrdRdpPipeWireStream *stream,
       frame->buffer = grd_rdp_buffer_pool_acquire (stream->buffer_pool);
       if (!frame->buffer)
         {
-          maybe_release_pipewire_buffer_lock (stream, pw_buffer);
           grd_session_rdp_notify_error (stream->session_rdp,
                                         GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
-          callback (stream, g_steal_pointer (&frame), FALSE, user_data);
+          grd_rdp_frame_invoke_callback (g_steal_pointer (&frame), FALSE);
           return;
         }
       rdp_buffer = frame->buffer;
@@ -789,8 +791,7 @@ process_frame_data (GrdRdpPipeWireStream *stream,
 
       if (!hwaccel_nvidia)
         {
-          maybe_release_pipewire_buffer_lock (stream, pw_buffer);
-          callback (stream, g_steal_pointer (&frame), TRUE, user_data);
+          grd_rdp_frame_invoke_callback (g_steal_pointer (&frame), TRUE);
           return;
         }
 
@@ -836,12 +837,13 @@ process_frame_data (GrdRdpPipeWireStream *stream,
       unsigned int i;
       uint8_t *dst_data = NULL;
 
+      acquire_pipewire_buffer_lock (stream, pw_buffer);
       frame->buffer = grd_rdp_buffer_pool_acquire (stream->buffer_pool);
       if (!frame->buffer)
         {
           grd_session_rdp_notify_error (stream->session_rdp,
                                         GRD_SESSION_RDP_ERROR_GRAPHICS_SUBSYSTEM_FAILED);
-          callback (stream, g_steal_pointer (&frame), FALSE, user_data);
+          grd_rdp_frame_invoke_callback (g_steal_pointer (&frame), FALSE);
           return;
         }
       rdp_buffer = frame->buffer;
@@ -882,7 +884,6 @@ process_frame_data (GrdRdpPipeWireStream *stream,
           import_buffer_data->rdp_buffer = rdp_buffer;
         }
 
-      acquire_pipewire_buffer_lock (stream, pw_buffer);
       grd_egl_thread_download (egl_thread,
                                stream->egl_slot,
                                grd_rdp_buffer_get_pbo (rdp_buffer),
