@@ -541,7 +541,9 @@ static const AUDIO_FORMAT audio_format_pcm =
 
 static AUDIO_FORMAT server_formats[] =
 {
+#ifdef HAVE_FDK_AAC
   audio_format_aac,
+#endif /* HAVE_FDK_AAC */
   audio_format_opus,
   audio_format_pcm,
 };
@@ -639,9 +641,11 @@ rdpsnd_activated (RdpsndServerContext *rdpsnd_context)
     {
       AUDIO_FORMAT *audio_format = &rdpsnd_context->client_formats[i];
 
+#ifdef HAVE_FDK_AAC
       if (audio_playback->aac_client_format_idx < 0 &&
           are_audio_formats_equal (audio_format, &audio_format_aac))
         audio_playback->aac_client_format_idx = i;
+#endif /* HAVE_FDK_AAC */
       if (audio_playback->opus_client_format_idx < 0 &&
           are_audio_formats_equal (audio_format, &audio_format_opus))
         audio_playback->opus_client_format_idx = i;

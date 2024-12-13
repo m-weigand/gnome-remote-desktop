@@ -36,11 +36,16 @@ tss2_rc_dep = dependency('tss2-rc')
 tss2_tctildr_dep = dependency('tss2-tctildr')
 xkbcommon_dep = dependency('xkbcommon', version: xkbcommon_req)
 
+have_fdk_aac = get_option('fdk_aac')
 have_rdp = get_option('rdp')
 have_vnc = get_option('vnc')
 
 if not have_rdp and not have_vnc
   error('Must enable at least one backend')
+endif
+
+if have_fdk_aac and not have_rdp
+  error('Support for audio output redirection using FDK AAC requires the RDP backend')
 endif
 
 if have_rdp
@@ -49,7 +54,6 @@ if have_rdp
   dl_dep = cc.find_library('dl', required: true)
 
   cuda_dep = dependency('ffnvcodec', version: cuda_req)
-  fdk_aac_dep = dependency('fdk-aac')
   freerdp_dep = dependency('freerdp3', version: freerdp_req)
   freerdp_client_dep = dependency('freerdp-client3', version: freerdp_req)
   freerdp_server_dep = dependency('freerdp-server3', version: freerdp_req)
@@ -57,6 +61,9 @@ if have_rdp
   opus_dep = dependency('opus')
   polkit_dep = dependency('polkit-gobject-1', version: polkit_req)
   winpr_dep = dependency('winpr3', version: freerdp_req)
+  if have_fdk_aac
+    fdk_aac_dep = dependency('fdk-aac')
+  endif
 endif
 
 if have_vnc
@@ -97,6 +104,7 @@ cdata.set_quoted('VERSION', meson.project_version())
 cdata.set('HAVE_LIBSYSTEMD', libsystemd_dep.found())
 cdata.set('HAVE_RDP', have_rdp)
 cdata.set('HAVE_VNC', have_vnc)
+cdata.set('HAVE_FDK_AAC', have_fdk_aac)
 
 cdata.set_quoted('GRD_DATA_DIR', grd_datadir)
 cdata.set_quoted('GRD_LIBEXEC_DIR', libexecdir)
@@ -187,6 +195,10 @@ output = [
   '',
   '        RDP...................... ' + have_rdp.to_string(),
   '        VNC...................... ' + have_vnc.to_string(),
+  '',
+  '    Options for the RDP backend:',
+  '',
+  '        Support for audio output redirection using FDK AAC........' + have_fdk_aac.to_string(),
   '',
   '  Now type \'ninja -C ' + meson.project_build_root() + '\' to build ' + meson.project_name(),
   '',
