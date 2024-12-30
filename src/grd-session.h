@@ -153,4 +153,11 @@ void grd_session_start (GrdSession *session);
 
 void grd_session_stop (GrdSession *session);
 
+void rdpei_test_ses();
+struct ei_touch * rdpei_touch_ei_new_contact(GrdSession * session);
+void rdpei_touch_down_to_ei(struct ei_touch * touch, uint32_t x, uint32_t y);
+void rdpei_touch_up_to_ei(struct ei_touch * touch);
+void rdpei_touch_motion_to_ei(struct ei_touch * contact, uint32_t x, uint32_t y);
+void rdpei_touch_ei_send_frame(GrdSession * session);
+
 #endif /* GRD_SESSION_H */

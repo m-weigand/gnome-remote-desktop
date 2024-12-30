@@ -49,6 +49,7 @@ typedef enum _GrdRdpChannel
   GRD_RDP_CHANNEL_AUDIO_PLAYBACK,
   GRD_RDP_CHANNEL_DISPLAY_CONTROL,
   GRD_RDP_CHANNEL_TELEMETRY,
+  GRD_RDP_CHANNEL_RDPEI,
 } GrdRdpChannel;
 
 GrdSessionRdp *grd_session_rdp_new (GrdRdpServer      *rdp_server,

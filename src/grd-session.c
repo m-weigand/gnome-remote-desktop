@@ -98,6 +98,7 @@ typedef struct _GrdSessionPrivate
   struct ei_seat *ei_seat;
   struct ei_device *ei_abs_pointer;
   struct ei_device *ei_keyboard;
+  struct ei_device *ei_touch;
   uint32_t ei_sequence;
   GSource *ei_source;
   GHashTable *regions;
@@ -137,6 +138,7 @@ clear_ei (GrdSession *session)
 
   g_clear_pointer (&priv->ei_keyboard, ei_device_unref);
   g_clear_pointer (&priv->ei_abs_pointer, ei_device_unref);
+  g_clear_pointer (&priv->ei_touch, ei_device_unref);
   g_clear_pointer (&priv->ei_seat, ei_seat_unref);
   g_clear_pointer (&priv->ei_source, g_source_destroy);
   g_clear_pointer (&priv->ei, ei_unref);
@@ -1230,6 +1232,7 @@ process_regions (GrdSession       *session,
   GrdSessionPrivate *priv = grd_session_get_instance_private (session);
   size_t i = 0;
   struct ei_region *ei_region;
+  g_message("[RDP.EI] process_regions");
 
   while ((ei_region = ei_device_get_region (ei_device, i++)))
     {
@@ -1237,6 +1240,14 @@ process_regions (GrdSession       *session,
       GrdRegion *region;
 
       mapping_id = ei_region_get_mapping_id (ei_region);
+  	  g_message("[RDP.EI] region, with mapping_id: %s", mapping_id);
+  	  g_message("[RDP.EI] region, x/y/width/height: %u/%u/%u/%u/%f",
+			  ei_region_get_x(ei_region),
+			  ei_region_get_y(ei_region),
+			  ei_region_get_width(ei_region),
+			  ei_region_get_height(ei_region),
+			  ei_region_get_physical_scale(ei_region)
+			  );
       if (!mapping_id)
         continue;
 
@@ -1254,6 +1265,61 @@ process_regions (GrdSession       *session,
       g_hash_table_insert (priv->regions, g_strdup (mapping_id), region);
     }
 }
+
+void rdpei_test_ses(){
+
+};
+
+struct ei_touch * rdpei_touch_ei_new_contact(GrdSession * session)
+{
+	GrdSessionPrivate *priv = grd_session_get_instance_private (session);
+	g_message("[RDP.RDPEI] creating new rdpei_touch_ei_new_contact");
+	struct ei_device *touch_device = priv->ei_touch;
+	struct ei_touch * contact;
+	contact = ei_device_touch_new(touch_device);
+	return contact;
+}
+
+
+void rdpei_touch_down_to_ei(struct ei_touch * contact, uint32_t x, uint32_t y)
+{
+	/* uint32_t x_abs; */
+	/* uint32_t y_abs; */
+	// x_abs =
+	struct ei_device * device = ei_touch_get_device(contact);
+	struct ei_region * region = ei_device_get_region(device, 0);
+	if (region == NULL){
+		g_message("[RDP.RDPEI] rdpei_touch_down_to_ei: could not get region");
+	}
+	g_message("[RDP.RDPEI] rdpei_touch_down_to_ei: %u/%u", x, y);
+	ei_touch_down(
+		contact,
+	   	x + ei_region_get_x(region),
+	   	y
+	);
+};
+
+void rdpei_touch_motion_to_ei(struct ei_touch * contact, uint32_t x, uint32_t y)
+{
+	g_message("[RDP.RDPEI] rdpei_touch_motion_to_ei: %u/%u", x, y);
+	ei_touch_motion(contact, x + 1920, y);
+};
+
+void rdpei_touch_up_to_ei(struct ei_touch * contact)
+{
+	g_message("[RDP.RDPEI] rdpei_touch_up_to_ei");
+	ei_touch_up(contact);
+	// TODO: the docs imply that we can do this before sending the frame
+	// https://libinput.pages.freedesktop.org/libei/api/group__libei-sender.html#ga32d641eb21a604456eba11555c5777d7
+	/* ei_touch_unref(contact); */
+};
+
+void rdpei_touch_ei_send_frame(GrdSession * session)
+{
+	GrdSessionPrivate *priv = grd_session_get_instance_private (session);
+	g_message("[RDP.RDPEI] rdpei_touch_ei_send_frame");
+	ei_device_frame(priv->ei_touch, ei_now(priv->ei));
+};
 
 static gboolean
 grd_ei_source_dispatch (gpointer user_data)
@@ -1279,10 +1345,13 @@ grd_ei_source_dispatch (gpointer user_data)
             break;
 
           priv->ei_seat = ei_seat_ref (ei_event_get_seat (event));
+		  gboolean has_touch = ei_seat_has_capability(priv->ei_seat, EI_DEVICE_CAP_TOUCH);
+		  g_message("[RDP.EI] seat has touch capability: %i", has_touch);
           ei_seat_bind_capabilities (priv->ei_seat,
                                      EI_DEVICE_CAP_POINTER,
                                      EI_DEVICE_CAP_KEYBOARD,
                                      EI_DEVICE_CAP_POINTER_ABSOLUTE,
+                                     EI_DEVICE_CAP_TOUCH,
                                      EI_DEVICE_CAP_BUTTON,
                                      EI_DEVICE_CAP_SCROLL,
                                      NULL);
@@ -1294,9 +1363,14 @@ grd_ei_source_dispatch (gpointer user_data)
         case EI_EVENT_DEVICE_ADDED:
           {
             struct ei_device *device = ei_event_get_device (event);
+			g_message("[RDP.EI] EI_EVENT_DEVICE_ADDEDI %i/%i",
+					ei_device_has_capability (device, EI_DEVICE_CAP_POINTER_ABSOLUTE),
+					ei_device_has_capability (device, EI_DEVICE_CAP_TOUCH)
+					);
 
             if (ei_device_has_capability (device, EI_DEVICE_CAP_KEYBOARD))
               {
+			    g_message("[RDP.EI] EI_EVENT_DEVICE_ADDED: CAP_KEYBOARD");
                 g_autoptr (GError) error = NULL;
 
                 g_clear_pointer (&priv->ei_keyboard, ei_device_unref);
@@ -1310,12 +1384,24 @@ grd_ei_source_dispatch (gpointer user_data)
                     return G_SOURCE_REMOVE;
                   }
               }
-            if (ei_device_has_capability (device, EI_DEVICE_CAP_POINTER_ABSOLUTE))
-              {
-                maybe_dispose_ei_abs_pointer (session);
-                priv->ei_abs_pointer = ei_device_ref (device);
+            /* if (ei_device_has_capability (device, EI_DEVICE_CAP_POINTER_ABSOLUTE)) */
+            /*   { */
+			    /* g_message("[RDP.EI] EI_EVENT_DEVICE_ADDED: CAP_POINTER"); */
+            /*     maybe_dispose_ei_abs_pointer (session); */
+            /*     priv->ei_abs_pointer = ei_device_ref (device); */
+            /*     process_regions (session, device); */
+            /*   } */
+            if (ei_device_has_capability (device, EI_DEVICE_CAP_TOUCH))
+			{
+				g_message("[RDP.EI] EI_EVENT_DEVICE_ADDED: CAP_TOUCH");
+				// equivalent required for touch?
+                /* maybe_dispose_ei_abs_pointer (session); */
+                priv->ei_touch = ei_device_ref (device);
+				// not sure what this does
+				// TODO
                 process_regions (session, device);
-              }
+
+		    }
             break;
           }
         case EI_EVENT_DEVICE_RESUMED:
@@ -1323,6 +1409,11 @@ grd_ei_source_dispatch (gpointer user_data)
             ei_device_start_emulating (priv->ei_abs_pointer, ++priv->ei_sequence);
           if (ei_event_get_device (event) == priv->ei_keyboard)
             ei_device_start_emulating (priv->ei_keyboard, ++priv->ei_sequence);
+          if (ei_event_get_device (event) == priv->ei_touch){
+		    g_message("[RDP.RDPEI] ei_device_start_emulating");
+            ei_device_start_emulating (priv->ei_touch, ++priv->ei_sequence);
+		  }
+
           break;
         case EI_EVENT_DEVICE_PAUSED:
           break;
@@ -1331,6 +1422,10 @@ grd_ei_source_dispatch (gpointer user_data)
             maybe_dispose_ei_abs_pointer (session);
           if (ei_event_get_device (event) == priv->ei_keyboard)
             g_clear_pointer (&priv->ei_keyboard, ei_device_unref);
+          if (ei_event_get_device (event) == priv->ei_touch){
+		    g_message("[RDP.RDPEI] EI_EVENT_DEVICE_REMOVED");
+            g_clear_pointer (&priv->ei_touch, ei_device_unref);
+		  }
           break;
         default:
           handled = FALSE;
@@ -1465,6 +1560,14 @@ on_eis_connected (GObject      *object,
   on_num_lock_state_changed (priv->remote_desktop_session, NULL, session);
 }
 
+typedef enum _MetaRemoteDesktopDeviceTypes
+{
+	META_REMOTE_DESKTOP_DEVICE_TYPE_NONE = 0,
+	META_REMOTE_DESKTOP_DEVICE_TYPE_KEYBOARD = 1 << 0,
+	META_REMOTE_DESKTOP_DEVICE_TYPE_POINTER = 1 << 1,
+	META_REMOTE_DESKTOP_DEVICE_TYPE_TOUCHSCREEN = 1 << 2,
+} MetaRemoteDesktopDeviceTypes;
+
 static void
 on_remote_desktop_session_proxy_acquired (GObject      *object,
                                           GAsyncResult *result,
@@ -1495,6 +1598,13 @@ on_remote_desktop_session_proxy_acquired (GObject      *object,
   priv->remote_desktop_session = session_proxy;
 
   g_variant_builder_init (&options_builder, G_VARIANT_TYPE ("a{sv}"));
+  uint32_t device_types = META_REMOTE_DESKTOP_DEVICE_TYPE_KEYBOARD |
+	  META_REMOTE_DESKTOP_DEVICE_TYPE_POINTER |
+	  META_REMOTE_DESKTOP_DEVICE_TYPE_TOUCHSCREEN;
+  /* uint32_t device_types = META_REMOTE_DESKTOP_DEVICE_TYPE_NONE; */
+
+  g_variant_builder_add (
+		&options_builder, "{sv}", "device-types", g_variant_new_uint32 (device_types));
 
   grd_dbus_mutter_remote_desktop_session_call_connect_to_eis (
     priv->remote_desktop_session,
@@ -1580,6 +1690,7 @@ grd_session_finalize (GObject *object)
 
   g_assert (!priv->ei_keyboard);
   g_assert (!priv->ei_abs_pointer);
+  g_assert (!priv->ei_touch);
   g_assert (!priv->ei_seat);
   g_assert (!priv->ei_source);
   g_assert (!priv->ei);

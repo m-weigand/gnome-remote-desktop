@@ -172,6 +172,7 @@ process_rdp_events (GrdRdpEventQueue *rdp_event_queue)
                                               rdp_event->input_kbd_keysym.state);
           break;
         case RDP_EVENT_TYPE_INPUT_PTR_MOTION_ABS:
+		  g_message("RDP_EVENT_TYPE_INPUT_PTR_MOTION_ABS");
           grd_session_notify_pointer_motion_absolute (
             session, rdp_event->input_ptr_motion_abs.stream,
             &rdp_event->input_ptr_motion_abs.motion_abs);

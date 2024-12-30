@@ -48,6 +48,7 @@ typedef struct _RdpPeerContext
   GrdRdpDisplayControl *display_control;
   GrdRdpGraphicsPipeline *graphics_pipeline;
   GrdRdpTelemetry *telemetry;
+  GrdRdpRdpei *rdpei;
 } RdpPeerContext;
 
 #endif /* GRD_RDP_PRIVATE_H */

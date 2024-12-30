@@ -58,6 +58,7 @@ typedef struct _GrdRdpStreamOwner GrdRdpStreamOwner;
 typedef struct _GrdRdpSurface GrdRdpSurface;
 typedef struct _GrdRdpSurfaceRenderer GrdRdpSurfaceRenderer;
 typedef struct _GrdRdpTelemetry GrdRdpTelemetry;
+typedef struct _GrdRdpRdpei GrdRdpRdpei;
 typedef struct _GrdSession GrdSession;
 typedef struct _GrdSessionRdp GrdSessionRdp;
 typedef struct _GrdSessionVnc GrdSessionVnc;

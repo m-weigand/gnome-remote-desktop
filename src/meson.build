@@ -157,6 +157,8 @@ if have_rdp
     'grd-session-rdp.h',
     'grd-shell-dialog.c',
     'grd-shell-dialog.h',
+    'grd-rdp-channel-rdpei.c',
+    'grd-rdp-channel-rdpei.h',
   ])
 
   if libsystemd_dep.found()
